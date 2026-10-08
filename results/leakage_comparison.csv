@@ -1,0 +1,12 @@
+Task,Model,Metric,Leakage-free (no G1/G2),With leakage (G1+G2)
+Regression (G3),Linear Regression,R2,0.1415,0.7241
+Regression (G3),Linear Regression,RMSE,4.1957,2.3784
+Classification (at risk),Logistic Regression,F1,0.5333,0.8077
+Classification (at risk),Logistic Regression,ROC-AUC,0.6981,0.9601
+Classification (at risk),Logistic Regression,Accuracy,0.6456,0.8734
+Classification (at risk),SVM (RBF),F1,0.5614,0.8302
+Classification (at risk),SVM (RBF),ROC-AUC,0.7242,0.9659
+Classification (at risk),SVM (RBF),Accuracy,0.6835,0.8861
+Classification (at risk),Random Forest,F1,0.5581,0.8679
+Classification (at risk),Random Forest,ROC-AUC,0.6858,0.9666
+Classification (at risk),Random Forest,Accuracy,0.7595,0.9114

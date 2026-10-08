@@ -1,0 +1,5 @@
+Model,Accuracy,Precision,Recall,F1,ROC-AUC,CV F1 (mean),CV F1 (std)
+SVM (RBF),0.6835,0.5161,0.6154,0.5614,0.7242,0.4602,0.0381
+Random Forest,0.7595,0.7059,0.4615,0.5581,0.6858,0.4573,0.0826
+Logistic Regression,0.6456,0.4706,0.6154,0.5333,0.6981,0.4916,0.0751
+Baseline (majority class),0.6709,0.0,0.0,0.0,,,

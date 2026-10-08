@@ -1,0 +1,78 @@
+{
+  "dataset": "mat",
+  "best_classifier": "SVM (RBF)",
+  "tie_analysis": {
+    "metric": "F1",
+    "ranking": [
+      {
+        "model": "SVM (RBF)",
+        "F1": 0.5614035087719298
+      },
+      {
+        "model": "Random Forest",
+        "F1": 0.5581395348837209
+      },
+      {
+        "model": "Logistic Regression",
+        "F1": 0.5333333333333333
+      }
+    ],
+    "best_model": "SVM (RBF)",
+    "best_score": 0.5614035087719298,
+    "runner_up": "Random Forest",
+    "runner_up_score": 0.5581395348837209,
+    "gap": 0.003263973888208871,
+    "noise_floor": 0.08256140593051542,
+    "is_tie": true,
+    "tied_models": [
+      "SVM (RBF)",
+      "Random Forest",
+      "Logistic Regression"
+    ],
+    "n_test": 79
+  },
+  "classification": {
+    "Logistic Regression": {
+      "Accuracy": 0.6455696202531646,
+      "Precision": 0.47058823529411764,
+      "Recall": 0.6153846153846154,
+      "F1": 0.5333333333333333,
+      "ROC-AUC": 0.6981132075471698
+    },
+    "SVM (RBF)": {
+      "Accuracy": 0.6835443037974683,
+      "Precision": 0.5161290322580645,
+      "Recall": 0.6153846153846154,
+      "F1": 0.5614035087719298,
+      "ROC-AUC": 0.7242380261248186
+    },
+    "Random Forest": {
+      "Accuracy": 0.759493670886076,
+      "Precision": 0.7058823529411765,
+      "Recall": 0.46153846153846156,
+      "F1": 0.5581395348837209,
+      "ROC-AUC": 0.6857764876632801
+    }
+  },
+  "classification_baseline": {
+    "Accuracy": 0.6708860759493671,
+    "Precision": 0.0,
+    "Recall": 0.0,
+    "F1": 0.0,
+    "ROC-AUC": NaN,
+    "Model": "Baseline (majority class)"
+  },
+  "regression": {
+    "MAE": 3.3952609258019204,
+    "MSE": 17.603737398324718,
+    "RMSE": 4.195680802721379,
+    "R2": 0.14149247411195776
+  },
+  "regression_baseline": {
+    "MAE": 3.64585002403461,
+    "MSE": 20.70414396731293,
+    "RMSE": 4.550180652162387,
+    "R2": -0.009709643515769084,
+    "Model": "Baseline (predict mean)"
+  }
+}

@@ -1,0 +1,14 @@
+# A light theme is pinned deliberately. The charts' colour palette was validated
+# for colour-vision separation and contrast against this light surface
+# (#fcfcfb), and a university demonstration usually runs on a projector where a
+# light background is more legible. Changing these values invalidates that check.
+[theme]
+base = "light"
+primaryColor = "#2a78d6"
+backgroundColor = "#f9f9f7"
+secondaryBackgroundColor = "#fcfcfb"
+textColor = "#0b0b0b"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false

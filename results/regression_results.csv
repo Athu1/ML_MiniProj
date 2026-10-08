@@ -1,0 +1,3 @@
+Model,MAE,MSE,RMSE,R2,CV R2 (mean),CV R2 (std)
+Linear Regression,3.3953,17.6037,4.1957,0.1415,-0.0781,0.1396
+Baseline (predict mean),3.6459,20.7041,4.5502,-0.0097,,

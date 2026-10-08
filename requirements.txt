@@ -1,0 +1,14 @@
+# Student Academic Performance & At-Risk Prediction System
+#
+# Versions are lower-bounded at the ones this project was developed and tested
+# with, so a fresh install reproduces the documented results. Install with:
+#     pip install -r requirements.txt
+
+pandas>=2.0
+numpy>=1.24
+scikit-learn>=1.3          # tested with 1.9.1
+matplotlib>=3.7            # static figures for the written report
+seaborn>=0.12              # heatmap styling in those static figures
+streamlit>=1.65            # the web application
+plotly>=5.18               # interactive charts in the application
+joblib>=1.3                # saving and loading the fitted pipelines

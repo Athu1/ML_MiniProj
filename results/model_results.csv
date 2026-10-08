@@ -1,0 +1,7 @@
+Task,Model,Accuracy,Precision,Recall,F1,ROC-AUC,CV F1 (mean),CV F1 (std),MAE,MSE,RMSE,R2,CV R2 (mean),CV R2 (std)
+Classification (at risk),SVM (RBF),0.6835,0.5161,0.6154,0.5614,0.7242,0.4602,0.0381,,,,,,
+Classification (at risk),Random Forest,0.7595,0.7059,0.4615,0.5581,0.6858,0.4573,0.0826,,,,,,
+Classification (at risk),Logistic Regression,0.6456,0.4706,0.6154,0.5333,0.6981,0.4916,0.0751,,,,,,
+Classification (at risk),Baseline (majority class),0.6709,0.0,0.0,0.0,,,,,,,,,
+Regression (final grade),Linear Regression,,,,,,,,3.3953,17.6037,4.1957,0.1415,-0.0781,0.1396
+Regression (final grade),Baseline (predict mean),,,,,,,,3.6459,20.7041,4.5502,-0.0097,,
