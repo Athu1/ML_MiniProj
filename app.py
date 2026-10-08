@@ -841,6 +841,20 @@ def render_model_comparison():
     st.markdown("### How stable is that comparison?")
     st.plotly_chart(vz.cv_stability(CLF), width="stretch")
     st.markdown(
+        """<div class="caveat">
+        <b>The tie verdict replicates on an independent cohort.</b> The same
+        pipeline was run on the second UCI subject file (the Portuguese-language
+        file, 649 students) with <code>--dataset por</code>. There the gap
+        between the best and second-best classifier is 0.0223 against a
+        cross-validation spread of 0.1435 &mdash; again inside the noise, again a
+        tie. Two different cohorts, the same conclusion: on this problem these
+        three algorithms are not distinguishable. Full figures are in
+        <code>results/robustness_por.csv</code>, and the README's robustness
+        section records the one conclusion that did <i>not</i> replicate.
+        </div>""",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
         "The error bars are one standard deviation across the "
         f"{cfg.CV_FOLDS} cross-validation folds. They overlap almost completely, "
         "which is the visual version of the tie verdict: with 316 training "
@@ -939,7 +953,13 @@ students it flagged, **{conf['TP']}** really were at risk, a precision of
         of one 79-student split. With a typical error of around
         {REG['test_metrics']['MAE']:.1f} grade points on a 0&ndash;20 scale,
         this model should be treated as a demonstration of the technique, not as
-        a usable grade predictor.
+        a usable grade predictor.<br><br>
+        <b>One bound on that claim.</b> Run on the larger Portuguese-language
+        file (649 students), the same model reaches a cross-validated R&sup2; of
+        <b>+0.271</b> with RMSE 2.86 grade points. So the failure here is a
+        property of <i>this</i> cohort &mdash; 38 zero-grade artefact records and
+        a wide grade spread &mdash; rather than proof that a grade can never be
+        predicted from background data.
         </div>""",
         unsafe_allow_html=True,
     )
@@ -1335,10 +1355,18 @@ Stated plainly, because these bound what the results can be used for.
 - **The models are weak, and the honest metrics say so.** F1 around
   {max(m['F1'] for m in CLF_METRICS.values()):.2f} means roughly half of the
   flagged students are false alarms. Cross-validated regression R² is
-  {REG['cv_r2_mean']:+.3f} — no better than predicting the cohort average.
-- **{SUMMARY['n_zero_g3']} students have a final grade of 0**, almost certainly
-  dropout or non-attendance rather than a real score. They were kept, which is
-  the defensible choice, but they distort both tasks.
+  {REG['cv_r2_mean']:+.3f} on this file — no better than predicting the cohort
+  average. It is **+0.271** on the larger Portuguese file, so that failure is a
+  property of this cohort rather than of the problem.
+- **Results are reported for one subject file.** A robustness run on the
+  Portuguese file (649 students) confirms the model tie and the dominance of
+  `failures`, but contradicts the regression verdict — see
+  `results/robustness_por.csv`.
+- **{SUMMARY['n_zero_g3']} students have a final grade of 0** while recording
+  zero absences *and* a non-zero first-period grade — a combination that cannot
+  describe a real academic record, so these are almost certainly dropout or
+  unentered marks. They were kept, which is the defensible choice, but they
+  distort both tasks and they suppress the `absences` correlation.
 - **The three models are statistically indistinguishable.** Reporting any one of
   them as "best" on this test set would be over-reading the data.
 - **Self-reported features.** Study time, alcohol consumption, free time and

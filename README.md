@@ -29,19 +29,19 @@ ensemble — behind an interactive Streamlit application.
 10. [Evaluation metrics](#10-evaluation-metrics)
 11. [The most important result: what data leakage would have bought us](#11-the-most-important-result-what-data-leakage-would-have-bought-us)
 12. [Results](#12-results)
-13. [Model comparison](#13-model-comparison)
-14. [Feature importance](#14-feature-importance)
-15. [System architecture](#15-system-architecture)
-16. [Screenshots](#16-screenshots)
-17. [Installation](#17-installation)
-18. [How to run](#18-how-to-run)
-19. [Project structure](#19-project-structure)
-20. [Limitations](#20-limitations)
-21. [Future scope](#21-future-scope)
-22. [Ethical statement](#22-ethical-statement)
-23. [Conclusion](#23-conclusion)
-24. [References](#24-references)
-
+13. [Robustness check on the second subject file](#13-robustness-check-on-the-second-subject-file)
+14. [Model comparison](#14-model-comparison)
+15. [Feature importance](#15-feature-importance)
+16. [System architecture](#16-system-architecture)
+17. [Screenshots](#17-screenshots)
+18. [Installation](#18-installation)
+19. [How to run](#19-how-to-run)
+20. [Project structure](#20-project-structure)
+21. [Limitations](#21-limitations)
+22. [Future scope](#22-future-scope)
+23. [Ethical statement](#23-ethical-statement)
+24. [Conclusion](#24-conclusion)
+25. [References](#25-references)
 ---
 
 ## 1. Problem statement
@@ -480,7 +480,59 @@ is right is a policy decision, not a modelling one.
   three models. The single test split is a flattering one. Reporting only the
   test figures would have overstated the results by about 0.07 F1.
 
-## 13. Model comparison
+## 13. Robustness check on the second subject file
+
+Every figure above comes from the Mathematics file. Because a result on one
+395-student file is weak evidence, the identical pipeline was run on the
+Portuguese-language file (649 students) with `python src/train_models.py
+--dataset por`. Full numbers are in `results/robustness_por.csv`.
+
+| | mat (Mathematics, 395) | por (Portuguese, 649) |
+|---|---|---|
+| At risk | 32.9% | **15.4%** |
+| Majority-class baseline accuracy | 0.6709 | **0.8462** |
+| Best F1 | 0.5614 (SVM) | **0.4314** (Logistic Regression) |
+| ROC-AUC range | 0.6858 – 0.7242 | **0.7550 – 0.8100** |
+| Statistical tie? | yes (gap 0.0033 < noise 0.0826) | yes (gap 0.0223 < noise 0.1435) |
+| Top permutation-importance feature | `failures` (0.2786) | `failures` (0.0648) |
+| Regression test R² | 0.1415 | 0.1602 |
+| Regression **CV** R² | **−0.0781** | **+0.2707** |
+
+**Three findings replicate**, which is the main reason to trust them:
+
+1. **The statistical tie holds.** On both files the gap between the best and
+   second-best classifier is far inside the cross-validation noise. The claim
+   "these three algorithms are indistinguishable here" is not an artefact of one
+   train/test split.
+2. **`failures` is the top feature on both.** Prior academic failure remains the
+   single most informative predictor, under an independent cohort.
+3. **The accuracy trap is worse, not better.** On the Portuguese file *no model
+   beats the majority-class baseline on accuracy at all* (0.777, 0.800 and 0.823
+   against 0.8462) — while all three reach a clearly useful ROC-AUC of 0.755 to
+   0.810. If you ranked by accuracy you would conclude all three models are
+   worthless. They are not.
+
+**And one conclusion does not generalise, which is worth stating plainly:**
+
+> **The regression verdict is specific to the Mathematics file.** On `mat`,
+> cross-validated R² is **−0.0781** — worse than predicting the mean, which is
+> why section 12 calls the task intractable. On `por` it is **+0.2707 ± 0.0685**,
+> modest but genuinely positive, with RMSE falling from 4.20 to 2.86 grade
+> points. So "a final grade cannot be predicted from background data alone" is
+> too strong as a general claim. The accurate statement is that it cannot be done
+> *on the Mathematics cohort*, and that on a larger cohort with a less dispersed
+> grade distribution the same linear model does carry real signal.
+
+This is also a clean illustration of why **F1 and ROC-AUC diverge under class
+imbalance**: moving from 32.9% to 15.4% positives *lowers* every F1 score while
+*raising* every ROC-AUC. F1 depends on a fixed 0.5 threshold against a rarer
+class; ROC-AUC assesses the ranking across all thresholds and is far less
+sensitive to the base rate.
+
+The two files are still never combined — 382 students appear in both, so
+concatenating them would put the same student in train and test.
+
+## 14. Model comparison
 
 The mechanical ranking puts **SVM (RBF)** first on F1 at **0.5614**. That ranking
 should not be trusted, and the project says so in code rather than in prose:
@@ -517,7 +569,7 @@ Logistic Regression with `C = 0.01` — a heavily regularised linear model, the
 simplest thing in the project — matches a 400-tree forest. When the signal in
 the data is weak and the sample is small, model complexity buys nothing.
 
-## 14. Feature importance
+## 15. Feature importance
 
 Two independent measures were computed for the Random Forest, and **they
 disagree** — which is the more useful finding.
@@ -561,7 +613,7 @@ would raise their grade. Several features are plausibly proxies for
 circumstances the dataset never measures: household stability, work outside
 school, health, prior schooling quality.
 
-## 15. System architecture
+## 16. System architecture
 
 ```mermaid
 flowchart TD
@@ -593,7 +645,7 @@ that fits a model, and `app.py` only ever loads. If the `.pkl` files are missing
 the app says so and tells the user to run the training script — it does not
 silently retrain on every launch.
 
-## 16. Screenshots
+## 17. Screenshots
 
 | Overview | Student Prediction (form) |
 |---|---|
@@ -613,7 +665,7 @@ silently retrain on every launch.
 
 Static figures for the written report are in `results/figures/`.
 
-## 17. Installation
+## 18. Installation
 
 Requires **Python 3.9 or newer**.
 
@@ -630,7 +682,7 @@ pip install -r requirements.txt
 The dataset is already committed under `data/raw/`, so there is nothing to
 download.
 
-## 18. How to run
+## 19. How to run
 
 ### Step 1 — train the models
 
@@ -650,6 +702,14 @@ python src/train_models.py --no-tune            # skip the grid searches (faster
 python src/train_models.py --skip-leakage-demo  # skip the G1/G2 comparison
 python src/train_models.py --no-figures         # skip the static PNG figures
 ```
+
+> **Note on `--dataset por`.** The saved pipelines and result tables are shared
+> between the two files, so this flag **overwrites `models/` and `results/`**
+> and the app will then display Portuguese-file figures. The script prints a
+> warning when you use it. Run `python src/train_models.py` with no flags to
+> restore the defaults. The pre-computed comparison is already committed as
+> `results/robustness_por.csv`, so you do not need to run it to see the numbers
+> in [section 13](#13-robustness-check-on-the-second-subject-file).
 
 ### Step 2 — launch the application
 
@@ -671,7 +731,7 @@ This is the data inspection that *preceded* the modelling: it is where the
 `G3 = 0` group, the flat `absences` correlation and the 67.1% baseline were
 found.
 
-## 19. Project structure
+## 20. Project structure
 
 ```
 ML_MiniProj/
@@ -700,6 +760,7 @@ ML_MiniProj/
 │   ├── classification_results.csv
 │   ├── regression_results.csv
 │   ├── leakage_comparison.csv      the G1/G2 demonstration
+│   ├── robustness_por.csv          same pipeline on the 649-student por file
 │   ├── feature_importance.csv
 │   ├── metrics_summary.json
 │   └── figures/                    9 static PNGs for the written report
@@ -721,7 +782,7 @@ ML_MiniProj/
     └── screenshots/                7 application screenshots
 ```
 
-## 20. Limitations
+## 21. Limitations
 
 Stated plainly, because they bound what the results can be used for.
 
@@ -731,7 +792,8 @@ Stated plainly, because they bound what the results can be used for.
   system or another decade.
 - **The models are weak, and the honest metrics say so.** F1 ≈ 0.56 means roughly
   half of flagged students are false alarms. Cross-validated regression R² is
-  **−0.078** — no better than predicting the cohort average.
+  **−0.078** on the Mathematics file — no better than predicting the cohort
+  average (though +0.271 on the Portuguese file; see section 13).
 - **38 students have a final grade of 0** while recording zero absences *and* a
   non-zero `G1` — almost certainly dropout or an unrecorded mark rather than a
   real score. Keeping them is defensible but it distorts both tasks, and it
@@ -753,7 +815,7 @@ Stated plainly, because they bound what the results can be used for.
   so the CV figures are optimistic. The held-out test figures are the honest
   ones.
 
-## 21. Future scope
+## 22. Future scope
 
 - **More and more recent data**, across multiple institutions, to test whether
   any of this generalises.
@@ -777,7 +839,7 @@ Stated plainly, because they bound what the results can be used for.
 - **Calibration analysis**, since the reported probabilities are currently taken
   at face value and the SVM's are Platt-scaled approximations.
 
-## 22. Ethical statement
+## 23. Ethical statement
 
 This system is an **academic machine-learning demonstration** and must not be
 used to make high-stakes decisions about students.
@@ -800,7 +862,7 @@ access-controlled, retained only as long as needed, and subject to human review.
 A model should only ever help decide **who a teacher talks to first** — never
 replace that conversation.
 
-## 23. Conclusion
+## 24. Conclusion
 
 This project implements and compares four machine learning algorithms on a real
 student-performance dataset, with the constraint that no model may see a grade as
@@ -811,10 +873,13 @@ an input. The results are modest and they are honest:
   background and behaviour genuinely carry information about who will struggle.
   At F1 ≈ 0.56 the system is useful as a screening aid to prioritise a tutor's
   attention, and nowhere near good enough to decide anything alone.
-- **The grade-regression task is essentially not solvable from this data.**
-  Cross-validated R² is negative. Predicting an exact grade from background
-  information, with no prior marks, does not work here — and demonstrating that
-  cleanly is a legitimate result.
+- **The grade-regression task is not solvable on the Mathematics file**, where
+  cross-validated R² is −0.0781, worse than predicting the mean. But the
+  robustness check qualifies this: on the larger Portuguese file the same model
+  reaches CV R² **+0.2707**. The defensible claim is therefore narrower than
+  "grades cannot be predicted from background data" — it is that they cannot be
+  predicted *on this cohort*, whose 38 zero-grade records and wide grade
+  dispersion make the target unusually hard.
 - **Model complexity bought nothing.** A heavily regularised Logistic Regression
   matches a 400-tree Random Forest and an RBF SVM; the three are statistically
   tied. When the signal is weak and the sample is small, the algorithm is not
@@ -834,7 +899,7 @@ feature importance, and data visualisation. The project's distinguishing feature
 is that it treats a weak result as a finding to explain rather than a number to
 inflate.
 
-## 24. References
+## 25. References
 
 1. P. Cortez and A. Silva. "Using Data Mining to Predict Secondary School Student
    Performance." In A. Brito and J. Teixeira (eds.), *Proceedings of 5th FUture

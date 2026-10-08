@@ -1,0 +1,13 @@
+Dataset,Task,Model,Accuracy,Precision,Recall,F1,ROC-AUC,CV F1 (mean),CV F1 (std),MAE,RMSE,R2,CV R2 (mean),CV R2 (std)
+"mat (Mathematics, 395)",Classification (at risk),SVM (RBF),0.6835,0.5161,0.6154,0.5614,0.7242,0.4602,0.0381,,,,,
+"mat (Mathematics, 395)",Classification (at risk),Random Forest,0.7595,0.7059,0.4615,0.5581,0.6858,0.4573,0.0826,,,,,
+"mat (Mathematics, 395)",Classification (at risk),Logistic Regression,0.6456,0.4706,0.6154,0.5333,0.6981,0.4916,0.0751,,,,,
+"mat (Mathematics, 395)",Classification (at risk),Baseline (majority class),0.6709,0.0,0.0,0.0,,,,,,,,
+"mat (Mathematics, 395)",Regression (final grade),Linear Regression,,,,,,,,3.3953,4.1957,0.1415,-0.0781,0.1396
+"mat (Mathematics, 395)",Regression (final grade),Baseline (predict mean),,,,,,,,3.6459,4.5502,-0.0097,,
+"por (Portuguese, 649)",Classification (at risk),Logistic Regression,0.7769,0.3548,0.55,0.4314,0.755,0.4887,0.0878,,,,,
+"por (Portuguese, 649)",Classification (at risk),SVM (RBF),0.8,0.375,0.45,0.4091,0.7695,0.507,0.1261,,,,,
+"por (Portuguese, 649)",Classification (at risk),Random Forest,0.8231,0.4,0.3,0.3429,0.81,0.5076,0.1435,,,,,
+"por (Portuguese, 649)",Classification (at risk),Baseline (majority class),0.8462,0.0,0.0,0.0,,,,,,,,
+"por (Portuguese, 649)",Regression (final grade),Linear Regression,,,,,,,,2.1564,2.8618,0.1602,0.2707,0.0685
+"por (Portuguese, 649)",Regression (final grade),Baseline (predict mean),,,,,,,,2.3946,3.1726,-0.0322,,

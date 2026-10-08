@@ -20,6 +20,7 @@
    - [8.4 Ensemble Learning / Random Forest](#84-ensemble-learning--random-forest)
 9. [Implementation](#9-implementation)
 10. [Results](#10-results)
+    - [10.7 Robustness check on the second subject file](#107-robustness-check-on-the-second-subject-file)
 11. [Model Comparison](#11-model-comparison)
 12. [Screenshots](#12-screenshots)
 13. [Advantages](#13-advantages)
@@ -1003,6 +1004,66 @@ an early-warning system must issue its warning while intervention remains
 possible, and a model requiring the second-period grade in order to predict the
 third offers no such warning.
 
+### 10.7 Robustness check on the second subject file
+
+All preceding results derive from the Mathematics file. A result obtained on a
+single 395-instance dataset constitutes weak evidence, so the identical pipeline
+was executed on the Portuguese-language file (649 instances) via
+`python src/train_models.py --dataset por`. Complete figures are recorded in
+`results/robustness_por.csv`.
+
+| Quantity | mat (Mathematics, 395) | por (Portuguese, 649) |
+|---|---|---|
+| At-risk proportion | 32.9% | 15.4% |
+| Majority-class baseline accuracy | 0.6709 | 0.8462 |
+| Highest F1 | 0.5614 (SVM) | 0.4314 (Logistic Regression) |
+| ROC-AUC range | 0.6858 – 0.7242 | 0.7550 – 0.8100 |
+| Tie verdict | tie (gap 0.0033 < noise 0.0826) | tie (gap 0.0223 < noise 0.1435) |
+| Leading permutation-importance feature | `failures` (0.2786) | `failures` (0.0648) |
+| Regression R² (test) | 0.1415 | 0.1602 |
+| Regression R² (5-fold CV) | **−0.0781** | **+0.2707** |
+
+**Three principal findings replicate**, which materially strengthens the
+confidence that may be placed in them.
+
+First, **the statistical tie holds on both files**. In each case the margin
+separating the best and second-best classifier falls well inside the
+cross-validation standard deviation. The conclusion that these three algorithms
+are not distinguishable on this problem is therefore not an artefact of a single
+partition of a single dataset.
+
+Second, **`failures` is the leading feature under both cohorts**, by permutation
+importance, confirming prior academic failure as the most informative available
+predictor.
+
+Third, **the limitations of accuracy as a metric are more pronounced, not less**.
+On the Portuguese file no model exceeds the majority-class baseline accuracy at
+all — 0.7769, 0.8000 and 0.8231 against 0.8462 — while all three attain a
+ROC-AUC between 0.7550 and 0.8100. Ranking by accuracy would lead to the
+conclusion that all three models are without value, which the ROC-AUC figures
+contradict.
+
+**One conclusion, however, does not generalise, and the qualification is
+material.** Section 10.1 characterises the regression task as intractable on the
+basis of a cross-validated R² of −0.0781. On the Portuguese file the same model
+attains a cross-validated R² of **+0.2707 ± 0.0685**, with root mean squared
+error falling from 4.1957 to 2.8618 grade points. The claim that a final grade
+cannot be predicted from background attributes alone is therefore too strong as a
+general proposition. The accurate statement is that it cannot be predicted *on
+the Mathematics cohort*, whose 38 zero-grade records and wider grade dispersion
+render the target unusually difficult, and that on a larger cohort with a less
+dispersed target the same linear model carries modest but genuine predictive
+signal.
+
+The comparison additionally provides a clear illustration of the divergence
+between F1 and ROC-AUC under class imbalance. Reducing the positive-class
+proportion from 32.9% to 15.4% lowers every F1 score while raising every
+ROC-AUC. F1 is evaluated at a fixed 0.5 threshold against a rarer class and is
+consequently sensitive to the base rate; ROC-AUC assesses the ranking across all
+thresholds and is substantially less so.
+
+The two files remain uncombined throughout, for the reason given in Section 5.6.
+
 ---
 
 ## 11. Model Comparison
@@ -1273,12 +1334,15 @@ information about academic difficulty. At F1 near 0.56, the resulting system is
 appropriate as a screening instrument for prioritising institutional attention
 and is not appropriate as a basis for determination.
 
-**The grade-regression task is not tractable from these attributes.** The
+**The grade-regression task is not tractable on the Mathematics cohort.** The
 cross-validated R² of −0.0781 indicates performance no better than predicting the
 cohort mean, and the mean absolute error of 3.3953 grade points on a 0–20 scale
 is not a useful degree of precision. Establishing this cleanly, rather than
 reporting the more favourable single-partition R² of 0.1415 without
-qualification, is itself a legitimate result.
+qualification, is itself a legitimate result. The robustness check of Section
+10.7 bounds the claim, however: on the 649-instance Portuguese file the same
+model attains a cross-validated R² of +0.2707, so the finding is a property of
+this cohort rather than of the problem in general.
 
 **Model complexity conferred no advantage.** A Logistic Regression with strong
 regularisation performed equivalently to a 400-tree Random Forest and to an

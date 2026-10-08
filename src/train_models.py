@@ -615,6 +615,18 @@ def main(argv=None) -> int:
 
     summary = dp.dataset_summary(df)
     print(f"\n[1/6] Dataset: student-{args.dataset}.csv")
+    if args.dataset != cfg.DEFAULT_DATASET:
+        # The saved pipelines and result tables are shared, so training on the
+        # non-default file replaces the artifacts the Streamlit app reads. Say so
+        # plainly rather than letting the app quietly display the other cohort.
+        print(f"      NOTE: this is NOT the project default "
+              f"(student-{cfg.DEFAULT_DATASET}.csv).")
+        print(f"            models/ and results/ will be OVERWRITTEN with "
+              f"{args.dataset}-trained artifacts,")
+        print(f"            so `streamlit run app.py` will then show "
+              f"{args.dataset} figures.")
+        print(f"            Re-run `python src/train_models.py` with no flags to "
+              f"restore the defaults.")
     print(f"      {summary['n_students']} students x {summary['n_raw_columns']} raw attributes")
     print(f"      missing values: {summary['missing_values']}   "
           f"duplicate rows: {summary['duplicate_rows']}")
@@ -835,6 +847,11 @@ def main(argv=None) -> int:
     print(f"    majority-class accuracy {clf_ctx['baseline']['Accuracy']:.4f} "
           f"(with recall 0.0000 on at-risk students)")
     print(f"    mean-predictor regression RMSE {reg['baseline_metrics']['RMSE']:.4f}")
+    if args.dataset != cfg.DEFAULT_DATASET:
+        print(f"\n  REMINDER: these artifacts are from student-{args.dataset}.csv, "
+              f"not the project default.")
+        print(f"            Run `python src/train_models.py` with no flags to "
+              f"restore the {cfg.DEFAULT_DATASET} models.")
     print(f"\n  Saved {len(cfg.MODEL_FILES)} pipelines to "
           f"{cfg.MODELS_DIR.relative_to(cfg.PROJECT_ROOT)}/ "
           f"and results to {cfg.RESULTS_DIR.relative_to(cfg.PROJECT_ROOT)}/")

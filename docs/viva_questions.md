@@ -574,7 +574,45 @@ to a dataset too small for the procedure to be reliable. It is also further
 evidence for the tie verdict: if re-tuning moves a model by 0.05 F1, a 0.003 gap
 between models means nothing.
 
-### 33. What are the main limitations of this project?
+### 33. Did you check whether your results hold on anything other than one dataset?
+
+Yes. The same pipeline was run on the second UCI subject file — the
+Portuguese-language file, 649 students — with
+`python src/train_models.py --dataset por`. Results are in
+`results/robustness_por.csv`.
+
+**Three findings replicated:**
+
+| | mat (395) | por (649) |
+|---|---|---|
+| Tie verdict | tie (0.0033 < 0.0826) | tie (0.0223 < 0.1435) |
+| Top permutation feature | `failures` | `failures` |
+| ROC-AUC range | 0.686 – 0.724 | 0.755 – 0.810 |
+
+The statistical tie between the three classifiers holds on both files, and
+`failures` is the leading feature on both. That is the main reason to trust those
+two claims — they are not artefacts of one split of one dataset.
+
+**And one finding did not replicate**, which I would volunteer rather than wait
+to be asked about:
+
+The regression verdict is **specific to the Mathematics file**. Cross-validated
+R² is −0.0781 on `mat` (worse than predicting the mean) but **+0.2707** on `por`,
+with RMSE dropping from 4.20 to 2.86 grade points. So "you cannot predict a final
+grade from background data" is too strong. The correct claim is that you cannot
+on *this* cohort — which has 38 zero-grade artefact records and a wider grade
+spread — and that on a larger, less dispersed cohort the same linear model does
+carry real signal.
+
+**A bonus point the comparison makes vividly:** on the Portuguese file *no model
+beats the majority-class baseline on accuracy at all* (0.777, 0.800, 0.823 vs
+**0.846**) — yet all three reach ROC-AUC between 0.755 and 0.810. Ranked by
+accuracy you would call all three worthless. They are not. Dropping the positive
+class from 32.9% to 15.4% *lowers* every F1 and *raises* every ROC-AUC, because
+F1 is measured at a fixed 0.5 threshold against a rarer class while ROC-AUC
+assesses the ranking across every threshold.
+
+### 34. What are the main limitations of this project?
 
 - **Small, old data.** 395 students, two Portuguese schools, 2008. The 79-student
   test set means one reclassified student moves F1 by ~0.02.
@@ -597,7 +635,7 @@ between models means nothing.
 - **No fairness audit**, despite the model using sensitive attributes (sex,
   family structure, parental education).
 
-### 34. If you had to improve the results, what would you do first?
+### 35. If you had to improve the results, what would you do first?
 
 **Not a different algorithm.** The three models are already tied, which says the
 bottleneck is the data, not the learner.
@@ -617,7 +655,7 @@ In order:
    much harder to corrupt.
 3. **More data**, from more institutions, to test generalisation at all.
 
-### 35. Can this system be used in a real school?
+### 36. Can this system be used in a real school?
 
 No, and the project says so explicitly. Three reasons.
 
