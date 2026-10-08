@@ -12,3 +12,7 @@ seaborn>=0.12              # heatmap styling in those static figures
 streamlit>=1.65            # the web application
 plotly>=5.18               # interactive charts in the application
 joblib>=1.3                # saving and loading the fitted pipelines
+
+# Testing only -- not needed to train the models or run the application.
+# Install with `pip install pytest`, then run `pytest` from the project root.
+pytest>=7.4

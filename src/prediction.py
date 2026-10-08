@@ -165,7 +165,8 @@ def predict_risk_probability(pipeline, X: pd.DataFrame) -> float | None:
 
 
 def predict_student(student: dict, models: dict, metadata: dict,
-                    classifier: str | None = None) -> dict:
+                    classifier: str | None = None,
+                    threshold: float | None = None) -> dict:
     """Score one student with the regression model and all three classifiers.
 
     Returns the predicted grade, the chosen classifier's verdict and
@@ -176,6 +177,15 @@ def predict_student(student: dict, models: dict, metadata: dict,
     classifier = classifier or metadata.get("best_classifier", "Random Forest")
     if classifier not in models:
         raise InvalidStudentInputError(f"Unknown classifier {classifier!r}.")
+
+    # `threshold=None` means "use the model's own predict()", i.e. the 0.5
+    # default that every reported metric in the comparison tables is computed
+    # at. Passing an explicit threshold instead applies the cost-tuned cut-off
+    # chosen during training from out-of-fold predictions.
+    if threshold is not None and not (0.0 < float(threshold) < 1.0):
+        raise InvalidStudentInputError(
+            f"Decision threshold must be strictly between 0 and 1, got {threshold!r}."
+        )
 
     X = build_input_row(student, metadata.get("default_profile", {}))
 
@@ -198,8 +208,11 @@ def predict_student(student: dict, models: dict, metadata: dict,
         if pipe is None:
             continue
         try:
-            label = int(pipe.predict(X)[0])
             proba = predict_risk_probability(pipe, X)
+            if threshold is None or proba is None:
+                label = int(pipe.predict(X)[0])
+            else:
+                label = int(proba >= float(threshold))
         except Exception as exc:
             raise InvalidStudentInputError(
                 f"{name} could not score this student "
@@ -225,6 +238,17 @@ def predict_student(student: dict, models: dict, metadata: dict,
     chosen = per_model[classifier]
     votes = sum(1 for v in per_model.values() if v["at_risk"])
 
+    # What the OTHER cut-off would have said, so the UI can show when the
+    # threshold -- rather than the model -- is what decided this student.
+    alt_threshold = (
+        cfg.DEFAULT_THRESHOLD if threshold is not None
+        else (metadata.get("classification", {}).get(classifier, {})
+              .get("threshold") or {}).get("threshold")
+    )
+    alt_label = None
+    if alt_threshold is not None and chosen["probability"] is not None:
+        alt_label = bool(chosen["probability"] >= float(alt_threshold))
+
     return {
         "input_row": X,
         "predicted_score": score,
@@ -238,6 +262,14 @@ def predict_student(student: dict, models: dict, metadata: dict,
         "models_agree": votes in (0, len(per_model)),
         "at_risk_votes": votes,
         "probability_disagrees_with_label": chosen["probability_disagrees_with_label"],
+        "threshold_used": (float(threshold) if threshold is not None
+                           else cfg.DEFAULT_THRESHOLD),
+        "threshold_is_tuned": threshold is not None,
+        "alt_threshold": (float(alt_threshold) if alt_threshold is not None else None),
+        "alt_at_risk": alt_label,
+        "threshold_decided_it": (
+            alt_label is not None and alt_label != chosen["at_risk"]
+        ),
         "n_models": len(per_model),
         "unknown_categories": unknown_categories(X, metadata),
         # The regression model's own view of the pass mark, which can disagree

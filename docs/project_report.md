@@ -20,6 +20,7 @@
    - [8.4 Ensemble Learning / Random Forest](#84-ensemble-learning--random-forest)
 9. [Implementation](#9-implementation)
 10. [Results](#10-results)
+    - [10.6 The decision threshold and probability calibration](#106-the-decision-threshold-and-probability-calibration)
     - [10.7 Robustness check on the second subject file](#107-robustness-check-on-the-second-subject-file)
 11. [Model Comparison](#11-model-comparison)
 12. [Screenshots](#12-screenshots)
@@ -785,7 +786,28 @@ The cross-validated figures are optimistic, since the same folds were used for
 hyper-parameter selection. The held-out figures remain the unbiased estimate.
 Both are reported; neither is presented alone.
 
-### 9.6 Error handling
+### 9.6 Test suite
+
+The project includes a pytest suite of 69 tests, executed with `pytest` from the
+repository root. The tests are directed at the claims the documentation makes
+rather than at implementation internals:
+
+- that the leakage assertion **fires** when a grade column is introduced, rather
+  than merely being present in the source;
+- that the preprocessor's scaling statistics derive from the training partition
+  and not from the full dataset;
+- that the metrics recorded in `results/` correspond to the committed models;
+- that the documented data characteristics hold, including the 38 zero-grade
+  records all exhibiting zero absences and the +0.034 / −0.213 reversal in the
+  absences correlation;
+- that increasing the false-negative cost never raises the decision threshold;
+- that the prediction interface rejects invalid input rather than failing.
+
+The suite was validated by mutation: removing the leakage assertion, transposing
+the cost weights, and altering a published metric each cause it to fail. A suite
+incapable of failing provides no evidence.
+
+### 9.7 Error handling
 
 The application handles the following conditions without exposing a traceback:
 absent or corrupted dataset file; absent, corrupted or version-incompatible model
@@ -1003,6 +1025,117 @@ metrics do not estimate performance on the stated task. The second is practical:
 an early-warning system must issue its warning while intervention remains
 possible, and a model requiring the second-period grade in order to predict the
 third offers no such warning.
+
+### 10.6 The decision threshold and probability calibration
+
+Sections 10.1 to 10.5 report every classification metric at a probability
+cut-off of 0.50 and present the resulting probabilities without examining them.
+Both omissions are addressed here.
+
+#### 10.6.1 The decision threshold
+
+The 0.50 cut-off is the scikit-learn default used by `predict()`. It is a
+convention rather than a derived quantity, and on this dataset it is
+consequential: **76% of test
+instances fall within 0.1 of it under Logistic Regression** and
+33% under Random Forest. For those
+instances the classification is determined by the constant rather than by the
+model.
+
+An alternative cut-off was therefore selected by minimising expected
+misclassification cost, under the stated assumption that **one false negative is
+equivalent in cost to 3 false positives** — the rationale
+being that the cost of a false positive is a tutor's conversation with a student
+who would have passed, whereas the cost of a false negative is a struggling
+student receiving no intervention. The ratio is a policy parameter recorded in
+`src/config.py` as `FN_COST_RATIO`; a sweep across alternative values is reported
+in the application.
+
+**Selection procedure.** The threshold is a parameter estimated from data, so
+selecting it on the test partition would constitute the same methodological
+error as the inclusion of `G2`. It is therefore selected from **out-of-fold
+predictions on the training partition**: `cross_val_predict` refits the pipeline
+on each of the five folds and predicts the held-out fold, so every probability
+entering the selection originates from a model fitted without that instance. The
+selected cut-off is subsequently applied, unaltered, to the held-out test
+partition.
+
+| Model | Cut-off | Precision | Recall | F1 | Accuracy |
+|---|---|---|---|---|---|
+| Logistic Regression | 0.500 (default) | 0.4706 | 0.6154 | 0.5333 | 0.6456 |
+| Logistic Regression | 0.398 (cost-selected) | 0.3571 | 0.9615 | 0.5208 | 0.4177 |
+| SVM (RBF) | 0.500 (default) | 0.5161 | 0.6154 | 0.5614 | 0.6835 |
+| SVM (RBF) | 0.271 (cost-selected) | 0.4182 | 0.8846 | 0.5679 | 0.5570 |
+| Random Forest | 0.500 (default) | 0.7059 | 0.4615 | 0.5581 | 0.7595 |
+| Random Forest | 0.304 (cost-selected) | 0.3333 | 0.8077 | 0.4719 | 0.4051 |
+
+**Interpretation.** At the default cut-off Random Forest fails to identify 14 of
+the 26 genuinely at-risk instances in the test partition. At the cost-selected
+cut-off its recall rises from 0.4615 to
+0.8077, corresponding to approximately 5
+unidentified instances.
+
+The cost is correspondingly real: precision falls from
+0.7059 to
+0.3333 and accuracy from
+0.7595 to
+0.4051, the latter substantially below the
+majority-class baseline of 0.6709. The model raises considerably more alarms.
+Whether that constitutes an improvement is contingent on available intervention
+capacity, which is the reason the cost ratio is an explicit and documented
+parameter.
+
+Two observations support the chosen ratio without being offered as
+justification for it. First, at 3:1 the cost-optimal
+cut-off coincides with the out-of-fold F1 maximum for all three models, so the
+cost-based and symmetric-metric criteria agree at that point. Second, for the
+SVM the selected cut-off improves F1 on the test partition as well
+(0.5614 to 0.5679), so for that
+model the adjustment involves no trade-off at all.
+
+Full figures are recorded in `results/threshold_tuning.csv`.
+
+#### 10.6.2 Probability calibration
+
+The application presents the estimated risk as a percentage accompanied by a
+meter, a presentation that implies the value is a calibrated probability. That
+implication was tested using the Brier score — the mean squared error of a
+probabilistic forecast — against the reference of a model which disregards its
+inputs and returns the cohort base rate of 32.9%, scoring **0.2208**.
+
+| Model | Brier score | Exceeds reference? | Mean calibration error | Observed range | Share in [0.3, 0.7] |
+|---|---|---|---|---|---|
+| Logistic Regression | 0.2251 | **No** | 0.1640 | 0.344 – 0.778 | 97.5% |
+| SVM (RBF) | 0.1956 | Yes | 0.0967 | 0.146 – 0.737 | 59.5% |
+| Random Forest | 0.1990 | Yes | 0.1303 | 0.197 – 0.733 | 81.0% |
+
+**Interpretation.** The Logistic Regression probabilities are not merely
+imprecise but **inferior to the constant base-rate forecast**, scoring
+0.2251 against 0.2208. Its output spans
+only 0.344 to
+0.778, with
+97.5% of instances between 0.3 and
+0.7. The cause is identifiable: the grid search selected `C = 0.01`,
+corresponding to strong regularisation, which shrinks the coefficients toward
+zero and correspondingly compresses the range of the logistic output. A model
+constrained never to be confident cannot produce a confident probability.
+
+The SVM and Random Forest estimates do exceed the reference, so they carry
+probabilistic information, but mean calibration errors of
+0.0967 and
+0.1303 indicate only
+approximate calibration.
+
+**Consequence for the system.** Every percentage the application displays should
+be interpreted as an ordinal risk ranking relative to other students, and not as
+an absolute probability of failure. The prediction interface states this
+explicitly adjacent to the meter and identifies Logistic Regression as the
+affected case. A calibration step — isotonic regression or Platt scaling fitted
+on a held-out fold — is the appropriate remedy and is recorded in Section 15.
+
+Figures are recorded in `results/calibration.csv`. The calibration curve is
+constructed from 5 equal-count bins over a 79-instance test
+partition, approximately 15 instances per bin, and is accordingly noisy.
 
 ### 10.7 Robustness check on the second subject file
 
@@ -1250,9 +1383,14 @@ associated measurement error.
 **Absence of causal warrant.** The analysis establishes association only. No
 result supports a claim that modifying a feature would modify an outcome.
 
-**Arbitrary decision threshold.** The 0.5 probability cut-off is a default rather
-than a derived value. An operational deployment would select the threshold from
-the relative costs of a missed student and a false alarm.
+**Probability calibration.** The estimates are only approximately calibrated,
+and the Logistic Regression estimates are inferior to a constant base-rate
+forecast (Section 10.6.2). The percentages the application displays are ordinal
+risk rankings, not absolute probabilities.
+
+**The cost ratio is a judgement.** The 3:1 false-negative to false-positive
+ratio underlying the cost-selected threshold is documented and swept, but it is
+an assumption about institutional priorities rather than a finding.
 
 **Ordinal encoding assumption.** The Likert-style attributes are treated as
 evenly spaced numeric values, which assumes the interval between adjacent levels

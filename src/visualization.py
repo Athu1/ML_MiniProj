@@ -818,3 +818,153 @@ def leakage_comparison_chart(leakage_rows: list[dict]) -> go.Figure:
     fig.update_xaxes(**_no_grid_axis("", tickfont=dict(size=10, color=INK_MUTED)))
     fig.update_yaxes(**_axis("Score", range=[0, 1.14], dtick=0.2))
     return fig
+
+
+# ==========================================================================
+# SECTION: decision threshold and calibration
+# ==========================================================================
+def threshold_tradeoff(curve: dict, default_threshold: float,
+                       tuned_threshold: float, model_name: str) -> go.Figure:
+    """Precision, recall and F1 across every possible decision threshold.
+
+    The point of the chart is that 0.5 is not a special place on this axis. Two
+    vertical rules mark the default cut-off and the cost-tuned one, so the
+    reader can see exactly what moving it buys and costs.
+
+    Three series, so the first three categorical slots are used and every series
+    is named in the legend -- identity never rests on colour alone.
+    """
+    fig = go.Figure()
+    for key, label, color in (
+        ("precision", "Precision", "#2a78d6"),
+        ("recall", "Recall (at-risk students found)", "#eb6834"),
+        ("f1", "F1", "#1baf7a"),
+    ):
+        fig.add_trace(
+            go.Scatter(
+                x=curve["threshold"], y=curve[key], mode="lines", name=label,
+                line=dict(color=color, width=2),
+                hovertemplate=f"{label}<br>threshold %{{x:.2f}} → "
+                              "%{y:.3f}<extra></extra>",
+            )
+        )
+
+    for x, text, dash in (
+        (default_threshold, f"default {default_threshold:.2f}", "dot"),
+        (tuned_threshold, f"cost-tuned {tuned_threshold:.2f}", "dash"),
+    ):
+        fig.add_vline(x=x, line=dict(color=INK_SECONDARY, width=2, dash=dash))
+        fig.add_annotation(
+            x=x, y=1.0, yref="paper", yanchor="bottom", text=text,
+            showarrow=False, font=dict(size=11, color=INK_SECONDARY),
+            xanchor="center", yshift=2,
+        )
+
+    fig.update_layout(**_base_layout(
+        f"{model_name}: what the decision threshold costs and buys", height=460,
+        showlegend=True, margin=dict(l=60, r=24, t=78, b=96),
+        legend=dict(orientation="h", yanchor="top", y=-0.16, x=0,
+                    font=dict(size=11, color=INK_SECONDARY)),
+    ))
+    fig.update_xaxes(**_axis("Decision threshold — P(at risk) above which a "
+                            "student is flagged", range=[0, 1], dtick=0.1))
+    fig.update_yaxes(**_axis("Score (0 to 1)", range=[0, 1.02], dtick=0.2))
+    return fig
+
+
+def calibration_chart(calibrations: dict) -> go.Figure:
+    """Predicted probability against observed failure rate, per model.
+
+    A perfectly calibrated model sits on the diagonal: of the students it calls
+    40% risk, 40% actually fail. Points below the diagonal mean the model is
+    over-confident (it claims more risk than materialises); above means
+    under-confident.
+
+    Bins hold an equal NUMBER of students rather than an equal slice of the
+    probability axis, because these probabilities are compressed and an evenly
+    sliced axis would leave most bins empty.
+    """
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=[0, 1], y=[0, 1], mode="lines", name="Perfect calibration",
+            line=dict(color=INK_MUTED, width=2, dash="dot"), hoverinfo="skip",
+        )
+    )
+    for model in cfg.CLASSIFICATION_MODEL_NAMES:
+        cal = calibrations.get(model)
+        if not cal:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=cal["mean_predicted"], y=cal["observed_frequency"],
+                mode="lines+markers",
+                name=f"{model} (Brier {cal['brier_score']:.3f})",
+                line=dict(color=MODEL_COLORS[model], width=2),
+                marker=dict(size=9, line=dict(width=2, color=SURFACE)),
+                hovertemplate=(f"{model}<br>predicted %{{x:.3f}}"
+                               "<br>actually failed %{y:.3f}<extra></extra>"),
+            )
+        )
+    fig.update_layout(**_base_layout(
+        "Are the predicted probabilities real? (test set, equal-count bins)",
+        height=470, showlegend=True, margin=dict(l=60, r=24, t=52, b=104),
+        legend=dict(orientation="h", yanchor="top", y=-0.17, x=0,
+                    font=dict(size=11, color=INK_SECONDARY)),
+    ))
+    # No `scaleanchor` here: forcing a 1:1 aspect in a container wider than it
+    # is tall made Plotly extend the axes past [0, 1], which is nonsense on a
+    # probability scale. The dashed reference line carries the comparison
+    # instead, and both axes stay honestly bounded.
+    fig.update_xaxes(**_axis("Mean predicted P(at risk)", range=[0, 1], dtick=0.2))
+    fig.update_yaxes(**_axis("Observed share who actually failed", range=[0, 1],
+                             dtick=0.2))
+    return fig
+
+
+def probability_spread(calibrations: dict) -> go.Figure:
+    """The observed range of each model's predicted probabilities.
+
+    This chart exists because the application displays these numbers as
+    percentages, which implies the full 0-100% scale is available. It is not:
+    each bar shows the span a model actually produces, against the full scale in
+    grey. A short bar means the model never expresses confidence, so its output
+    is a relative ranking rather than a probability.
+    """
+    models = [m for m in cfg.CLASSIFICATION_MODEL_NAMES if m in calibrations]
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=[100] * len(models), y=models, orientation="h", width=0.46,
+            marker=dict(color="#f0efec"), hoverinfo="skip", showlegend=False,
+        )
+    )
+    fig.add_trace(
+        go.Bar(
+            x=[(calibrations[m]["proba_range"]) * 100 for m in models],
+            base=[calibrations[m]["proba_min"] * 100 for m in models],
+            y=models, orientation="h", width=0.46,
+            marker=dict(color=[MODEL_COLORS[m] for m in models],
+                        line=dict(width=2, color=SURFACE)),
+            text=[f"{calibrations[m]['proba_min']:.0%} – "
+                  f"{calibrations[m]['proba_max']:.0%}" for m in models],
+            textposition="outside",
+            textfont=dict(size=11, color=INK_SECONDARY),
+            hovertemplate="%{y}<br>observed range %{text}<extra></extra>",
+            showlegend=False,
+        )
+    )
+    fig.add_vline(x=cfg.DEFAULT_THRESHOLD * 100,
+                  line=dict(color=INK_SECONDARY, width=2, dash="dash"))
+    fig.add_annotation(
+        x=cfg.DEFAULT_THRESHOLD * 100, y=1.0, yref="paper", yanchor="bottom",
+        text="default cut-off (50%)", showarrow=False, xanchor="center",
+        font=dict(size=11, color=INK_SECONDARY), yshift=2,
+    )
+    fig.update_layout(**_base_layout(
+        "The range of risk percentages each model actually produces",
+        height=320, barmode="overlay", margin=dict(l=150, r=96, t=74, b=52),
+    ))
+    fig.update_xaxes(**_no_grid_axis("P(at risk) (%)", range=[0, 112], dtick=20))
+    fig.update_yaxes(**_no_grid_axis("", tickfont=dict(size=11, color=INK_SECONDARY)))
+    return fig

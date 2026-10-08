@@ -612,7 +612,78 @@ class from 32.9% to 15.4% *lowers* every F1 and *raises* every ROC-AUC, because
 F1 is measured at a fixed 0.5 threshold against a rarer class while ROC-AUC
 assesses the ranking across every threshold.
 
-### 34. What are the main limitations of this project?
+### 34. Your app shows a "risk probability". Is it actually a probability?
+
+**For Logistic Regression, no — and it is worse than useless as one.** This is
+measured, not assumed.
+
+The Brier score is the mean squared error of a probability, so lower is better.
+The reference point is a model that ignores its inputs entirely and always
+answers the cohort base rate of 32.9%, which scores **0.2208**.
+
+| Model | Brier | vs constant predictor | Observed range | Share in [0.3, 0.7] |
+|---|---|---|---|---|
+| Logistic Regression | **0.2251** | **worse** | 0.34–0.78 | **97%** |
+| SVM (RBF) | 0.1956 | better | 0.15–0.74 | 59% |
+| Random Forest | 0.1990 | better | 0.20–0.73 | 81% |
+
+Logistic Regression's output never leaves 0.34–0.78 and
+97% of students sit between 0.3
+and 0.7. **Why:** the grid search chose `C = 0.01` — very strong regularisation —
+which shrinks every coefficient toward zero and with it the spread of the sigmoid
+output. A model that is never confident cannot produce a confident probability.
+
+SVM and Random Forest do beat the constant predictor, so their probabilities
+carry information, but with mean calibration errors of
+0.097 and
+0.130 they are only roughly
+calibrated.
+
+**So the app labels them honestly**: read every percentage as *"more or less at
+risk than other students"*, never as *"this student has an X% chance of
+failing"*. The fix, if I continued, would be isotonic or Platt recalibration on
+a held-out fold.
+
+### 35. Why 0.5 as the cut-off? And how did you choose the alternative without cheating?
+
+**0.5 is scikit-learn's default and nothing more** — it is not derived from
+anything about this problem. It matters here because
+**76% of test students sit
+within 0.1 of it** for Logistic Regression. For those students the constant
+decides the verdict, not the model.
+
+The project therefore also reports a cut-off chosen by minimising expected cost,
+where **one missed at-risk student counts as 3 false
+alarms**. That ratio is a *policy* judgement about what a school values — a
+tutor's wasted conversation versus a struggling student getting no help — not a
+statistical result. It lives as a documented constant in `src/config.py`, and
+the app sweeps other ratios so its influence is visible.
+
+**How it avoids cheating, which is the real question.** Picking the threshold on
+the test set would be tuning a parameter on the data used to report the result —
+the same error as using `G2`. So it is chosen from **out-of-fold predictions on
+the training split**: `cross_val_predict` refits the pipeline per fold, so every
+probability used in the choice comes from a model that never saw that student.
+The resulting cut-off is then applied, unchanged, to the held-out test set.
+
+**What it buys and costs** (Random Forest, test set):
+
+| | default 0.50 | cost-tuned 0.304 |
+|---|---|---|
+| Recall | 0.4615 | **0.8077** |
+| At-risk students missed | **14 of 26** | about **5** |
+| Precision | 0.7059 | 0.3333 |
+| Accuracy | 0.7595 | 0.4051 |
+
+Accuracy drops below the 0.6709 baseline. That is the honest price of catching
+three times as many at-risk students, and whether it is worth paying is a
+question about tutoring capacity rather than about modelling.
+
+One nicety worth mentioning: for **SVM the tuned cut-off improves F1 on the test
+set as well** (0.5614 → 0.5679), so
+for that model it is not even a trade-off.
+
+### 36. What are the main limitations of this project?
 
 - **Small, old data.** 395 students, two Portuguese schools, 2008. The 79-student
   test set means one reclassified student moves F1 by ~0.02.
@@ -635,7 +706,7 @@ assesses the ranking across every threshold.
 - **No fairness audit**, despite the model using sensitive attributes (sex,
   family structure, parental education).
 
-### 35. If you had to improve the results, what would you do first?
+### 37. If you had to improve the results, what would you do first?
 
 **Not a different algorithm.** The three models are already tied, which says the
 bottleneck is the data, not the learner.
@@ -655,7 +726,7 @@ In order:
    much harder to corrupt.
 3. **More data**, from more institutions, to test generalisation at all.
 
-### 36. Can this system be used in a real school?
+### 38. Can this system be used in a real school?
 
 No, and the project says so explicitly. Three reasons.
 
@@ -678,7 +749,7 @@ first**, never a replacement for that conversation.
 
 ---
 
-## The five questions most likely to catch you out
+## The six questions most likely to catch you out
 
 1. **"Random Forest is your main model — did it win?"**
    No. SVM had the highest F1 (0.5614 vs 0.5581), but the 0.0033 gap is 25×
@@ -703,7 +774,14 @@ first**, never a replacement for that conversation.
    well-documented high-cardinality bias, and the permutation measure on held-out
    data is the one to trust.
 
-5. **"Your SVM's accuracy (0.6835) is barely above the 0.6709 baseline. Isn't it useless?"**
+5. **"Your app shows 70% risk. Does that mean a 70% chance of failing?"**
+   No. For Random Forest it beats a constant base-rate predictor (Brier 0.1990 vs
+   0.2208) but is only roughly calibrated. For Logistic Regression it is **worse
+   than that constant predictor** (0.2251) and its output never leaves 0.34–0.78,
+   because the grid search chose `C = 0.01`. Read every percentage in the app as
+   a ranking against other students, which is what the interface now says.
+
+6. **"Your SVM's accuracy (0.6835) is barely above the 0.6709 baseline. Isn't it useless?"**
    On accuracy alone it looks that way, but the baseline has **recall 0 and F1 0** —
    it finds no at-risk students at all. The SVM finds 62% of them. All three
    classifiers use `class_weight="balanced"`, which deliberately trades accuracy

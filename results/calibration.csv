@@ -1,0 +1,4 @@
+Model,Brier score,Brier (constant base-rate predictor),Beats constant predictor,Mean calibration error,P(at risk) min,P(at risk) max,"Share in [0.3, 0.7]",Share within 0.1 of 0.5,Verdict
+Logistic Regression,0.2251,0.2208,False,0.164,0.344,0.7782,0.9747,0.7595,"range 0.34-0.78, 97% of students between 0.3 and 0.7, mean calibration error 0.164 -> heavily compressed -- read these as relative risk scores, not as calibrated probabilities"
+SVM (RBF),0.1956,0.2208,True,0.0967,0.1459,0.7374,0.5949,0.2278,"range 0.15-0.74, 59% of students between 0.3 and 0.7, mean calibration error 0.097 -> roughly calibrated, with visible deviation in places"
+Random Forest,0.199,0.2208,True,0.1303,0.1974,0.7325,0.8101,0.3291,"range 0.20-0.73, 81% of students between 0.3 and 0.7, mean calibration error 0.130 -> roughly calibrated, with visible deviation in places"

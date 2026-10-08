@@ -54,7 +54,13 @@ from sklearn.base import clone
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance
 from sklearn.linear_model import LinearRegression, LogisticRegression
-from sklearn.model_selection import GridSearchCV, StratifiedKFold, cross_val_score, train_test_split
+from sklearn.model_selection import (
+    GridSearchCV,
+    StratifiedKFold,
+    cross_val_predict,
+    cross_val_score,
+    train_test_split,
+)
 from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
 
@@ -223,6 +229,27 @@ def tune_classifier(name: str, builder, X_train, y_train, cv):
 
 
 # ==========================================================================
+# Out-of-fold probabilities (for choosing the decision threshold)
+# ==========================================================================
+def out_of_fold_probabilities(pipe, X_train, y_train, cv):
+    """P(at risk) for each training student, predicted by a model that did not see them.
+
+    This exists so the decision threshold can be chosen without touching the
+    test set. `cross_val_predict` refits the pipeline on each fold and predicts
+    the held-out fold, so every probability returned here comes from a model
+    fitted without that student. Choosing a cut-off from these numbers and then
+    applying it, unchanged, to the test set keeps the test set clean.
+
+    Picking the threshold on the test set instead would be precisely the kind of
+    leakage this project is built to avoid -- it would be tuning a parameter on
+    the data used to report the result.
+    """
+    return cross_val_predict(
+        clone(pipe), X_train, y_train, cv=cv, method="predict_proba", n_jobs=-1
+    )[:, 1]
+
+
+# ==========================================================================
 # Training routines
 # ==========================================================================
 def train_regression(df, numeric=None, categorical=None, leaky=False, verbose=True):
@@ -334,11 +361,36 @@ def train_classifiers(df, numeric=None, categorical=None, leaky=False,
             clone(pipe), X_train, y_train, cv=cv, scoring="f1", n_jobs=-1
         )
 
+        # ---- decision threshold, chosen WITHOUT the test set ----------
+        threshold_info, tuned_metrics, sweep, calibration = None, None, None, None
+        if y_proba is not None:
+            oof = out_of_fold_probabilities(pipe, X_train, y_train, cv)
+            threshold_info = em.choose_threshold(y_train, oof)
+            # The chosen cut-off is now applied, unchanged, to the test set.
+            tuned_metrics = em.metrics_at_threshold(
+                y_test, y_proba, threshold_info["threshold"]
+            )
+            # How much the cut-off depends on the cost ratio -- also from OOF.
+            sweep = em.threshold_sweep(y_train, oof)
+            calibration = em.calibration_report(y_test, y_proba)
+            calibration["summary"] = em.describe_calibration(calibration)
+            calibration["oof_brier"] = float(
+                __import__("sklearn.metrics", fromlist=["brier_score_loss"])
+                .brier_score_loss(y_train, oof)
+            )
+
         results[name] = {
             "name": name,
             "pipeline": pipe,
             "best_params": best_params,
             "test_metrics": test_metrics,
+            "threshold": threshold_info,
+            "tuned_metrics": tuned_metrics,
+            "threshold_sweep": sweep,
+            "threshold_curve": (
+                em.threshold_curve(y_test, y_proba) if y_proba is not None else None
+            ),
+            "calibration": calibration,
             "train_metrics": train_metrics,
             "cv_f1_mean": float(cv_f1.mean()),
             "cv_f1_std": float(cv_f1.std()),
@@ -367,6 +419,24 @@ def train_classifiers(df, numeric=None, categorical=None, leaky=False,
                   f"  (FN = at-risk students the model missed)")
             print(f"    train F1={train_metrics['F1']:.4f} -> "
                   f"train-test gap {train_metrics['F1'] - m['F1']:+.4f}")
+            ti = results[name]["threshold"]
+            if ti:
+                tm = results[name]["tuned_metrics"]
+                print(f"    threshold: {cfg.DEFAULT_THRESHOLD:.2f} (default) -> "
+                      f"{ti['threshold']:.3f} (chosen on out-of-fold train "
+                      f"predictions, FN:FP = {ti['fn_cost_ratio']:.0f}:1)")
+                print(f"      at the tuned cut-off: precision={tm['Precision']:.4f} "
+                      f"recall={tm['Recall']:.4f} F1={tm['F1']:.4f} "
+                      f"accuracy={tm['Accuracy']:.4f}")
+                print(f"      recall change {m['Recall']:+.4f} -> "
+                      f"{tm['Recall']:+.4f} ({tm['Recall'] - m['Recall']:+.4f})")
+                cal = results[name]["calibration"]
+                print(f"    calibration: {cal['summary']}")
+                print(f"      Brier {cal['brier_score']:.4f} vs "
+                      f"{cal['brier_baseline']:.4f} for a constant base-rate "
+                      f"predictor"
+                      + ("  <-- WORSE than the constant predictor"
+                         if cal['brier_score'] > cal['brier_baseline'] else ""))
 
     baseline = em.baseline_classification_metrics(y_train, y_test)
 
@@ -795,6 +865,50 @@ def main(argv=None) -> int:
     reg_table.to_csv(cfg.RESULTS_REGRESSION_CSV, index=False)
 
     importance_df.round(6).to_csv(cfg.RESULTS_FEATURE_IMPORTANCE_CSV, index=False)
+
+    # Threshold table: default vs cost-tuned, on the held-out test set.
+    thr_rows = []
+    for name, res in clf_results.items():
+        ti, tm = res["threshold"], res["tuned_metrics"]
+        if not ti:
+            continue
+        base = res["test_metrics"]
+        thr_rows.append({
+            "Model": name,
+            "Threshold": round(cfg.DEFAULT_THRESHOLD, 4), "Chosen by": "default (0.5)",
+            "Precision": round(base["Precision"], 4), "Recall": round(base["Recall"], 4),
+            "F1": round(base["F1"], 4), "Accuracy": round(base["Accuracy"], 4),
+        })
+        thr_rows.append({
+            "Model": name,
+            "Threshold": round(ti["threshold"], 4),
+            "Chosen by": f"expected cost, FN:FP = {ti['fn_cost_ratio']:.0f}:1",
+            "Precision": round(tm["Precision"], 4), "Recall": round(tm["Recall"], 4),
+            "F1": round(tm["F1"], 4), "Accuracy": round(tm["Accuracy"], 4),
+        })
+    if thr_rows:
+        pd.DataFrame(thr_rows).to_csv(cfg.RESULTS_THRESHOLD_CSV, index=False)
+
+    # Calibration table.
+    cal_rows = []
+    for name, res in clf_results.items():
+        c = res["calibration"]
+        if not c:
+            continue
+        cal_rows.append({
+            "Model": name,
+            "Brier score": round(c["brier_score"], 4),
+            "Brier (constant base-rate predictor)": round(c["brier_baseline"], 4),
+            "Beats constant predictor": c["brier_score"] < c["brier_baseline"],
+            "Mean calibration error": round(c["mean_abs_calibration_error"], 4),
+            "P(at risk) min": round(c["proba_min"], 4),
+            "P(at risk) max": round(c["proba_max"], 4),
+            "Share in [0.3, 0.7]": round(c["frac_in_mid_band"], 4),
+            "Share within 0.1 of 0.5": round(c["frac_near_default"], 4),
+            "Verdict": c["summary"],
+        })
+    if cal_rows:
+        pd.DataFrame(cal_rows).to_csv(cfg.RESULTS_CALIBRATION_CSV, index=False)
     if leakage_rows:
         pd.DataFrame(leakage_rows).to_csv(cfg.RESULTS_LEAKAGE_CSV, index=False)
 

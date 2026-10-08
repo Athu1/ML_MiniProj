@@ -53,6 +53,38 @@ POSITIVE_CLASS_LABEL = "At Risk"
 NEGATIVE_CLASS_LABEL = "Not At Risk"
 
 # --------------------------------------------------------------------------
+# Decision threshold
+# --------------------------------------------------------------------------
+# The probability above which a student is labelled At Risk. 0.5 is the
+# scikit-learn default and is what `predict()` uses, but it is an arbitrary
+# choice, not a derived one: on this dataset a third of the test students sit
+# within 0.1 of it, so for those students the verdict is decided by this
+# constant rather than by the model.
+DEFAULT_THRESHOLD = 0.5
+
+# How many false alarms one missed at-risk student is considered worth.
+#
+# This is a POLICY judgement, not a statistical one, and it belongs in the
+# open. The reasoning: the cost of a false alarm is a tutor spending a
+# conversation on a student who was going to pass anyway; the cost of a false
+# negative is a struggling student receiving no help at all. Those are not
+# equal, so a threshold chosen to maximise accuracy (or even F1, which weights
+# precision and recall equally) encodes the wrong preference.
+#
+# 3 is deliberately modest -- it says "we would accept three unnecessary
+# conversations to catch one more at-risk student". A school with more tutoring
+# capacity would raise it; one with less would lower it. The training script
+# reports a sweep over several ratios so the sensitivity to this number is
+# visible rather than hidden.
+FN_COST_RATIO = 3.0
+THRESHOLD_SWEEP_RATIOS = [1.0, 2.0, 3.0, 5.0, 10.0]
+
+# Bins for the calibration curve. Kept small because the test set is only 79
+# students: 10 bins would leave several bins with one or two students and a
+# meaninglessly spiky curve.
+CALIBRATION_BINS = 5
+
+# --------------------------------------------------------------------------
 # Feature selection
 # --------------------------------------------------------------------------
 # Columns deliberately kept OUT of the model inputs. Each entry is
@@ -227,3 +259,5 @@ RESULTS_REGRESSION_CSV = RESULTS_DIR / "regression_results.csv"
 RESULTS_LEAKAGE_CSV = RESULTS_DIR / "leakage_comparison.csv"
 RESULTS_FEATURE_IMPORTANCE_CSV = RESULTS_DIR / "feature_importance.csv"
 RESULTS_MODEL_RESULTS_CSV = RESULTS_DIR / "model_results.csv"
+RESULTS_THRESHOLD_CSV = RESULTS_DIR / "threshold_tuning.csv"
+RESULTS_CALIBRATION_CSV = RESULTS_DIR / "calibration.csv"

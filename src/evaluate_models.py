@@ -206,3 +206,186 @@ def assess_tie(results: dict, metric: str = "F1") -> dict:
         "tied_models": tied,
         "n_test": int(n_test),
     }
+
+
+# ==========================================================================
+# Decision threshold selection
+# ==========================================================================
+def expected_cost(y_true, y_proba, threshold: float, fn_cost: float) -> float:
+    """Cost of applying `threshold`, in units of "one false alarm".
+
+    A false negative (a missed at-risk student) counts `fn_cost` times as much
+    as a false positive. Cost is returned per student so it is comparable
+    across differently sized sets.
+    """
+    y_true = np.asarray(y_true, dtype=int)
+    pred = (np.asarray(y_proba, dtype=float) >= threshold).astype(int)
+    fp = int(((pred == 1) & (y_true == 0)).sum())
+    fn = int(((pred == 0) & (y_true == 1)).sum())
+    return (fp + fn_cost * fn) / len(y_true)
+
+
+def choose_threshold(y_true, y_proba, fn_cost: float = None,
+                     grid: np.ndarray = None) -> dict:
+    """Pick the probability cut-off that minimises expected cost.
+
+    IMPORTANT -- which data this may be called on. The threshold is a
+    parameter chosen from data, so selecting it on the test set would be
+    exactly the kind of leakage this project is built to avoid. It is therefore
+    chosen from *out-of-fold predictions on the training split* (see
+    `out_of_fold_probabilities` in train_models.py) and only then applied,
+    unchanged, to the held-out test set.
+
+    Ties are broken toward the HIGHER threshold, which is the conservative
+    choice: of two cut-offs with equal cost, the one that raises fewer alarms
+    is preferred.
+    """
+    fn_cost = cfg.FN_COST_RATIO if fn_cost is None else fn_cost
+    y_proba = np.asarray(y_proba, dtype=float)
+    if grid is None:
+        # Candidate cut-offs are the midpoints between observed probabilities:
+        # anything between two adjacent values produces an identical labelling,
+        # so there is nothing to gain from a finer grid.
+        uniq = np.unique(y_proba)
+        grid = np.unique(np.concatenate([[0.0], (uniq[:-1] + uniq[1:]) / 2, [1.0]])) \
+            if len(uniq) > 1 else np.array([0.5])
+
+    costs = np.array([expected_cost(y_true, y_proba, t, fn_cost) for t in grid])
+    best = float(grid[np.where(costs == costs.min())[0][-1]])  # highest on a tie
+
+    return {
+        "threshold": best,
+        "fn_cost_ratio": float(fn_cost),
+        "cost_at_chosen": float(costs.min()),
+        "cost_at_default": float(
+            expected_cost(y_true, y_proba, cfg.DEFAULT_THRESHOLD, fn_cost)
+        ),
+        "n_candidates": int(len(grid)),
+    }
+
+
+def metrics_at_threshold(y_true, y_proba, threshold: float) -> dict:
+    """Classification metrics obtained by cutting `y_proba` at `threshold`."""
+    pred = (np.asarray(y_proba, dtype=float) >= threshold).astype(int)
+    out = classification_metrics(y_true, pred, y_proba)
+    out["Threshold"] = float(threshold)
+    return out
+
+
+def threshold_sweep(y_true, y_proba, ratios=None) -> list[dict]:
+    """How the chosen threshold and the resulting metrics move with the cost ratio.
+
+    Reported so the cost ratio in config.py is visibly a choice with
+    consequences, rather than a number buried in a constant.
+    """
+    ratios = cfg.THRESHOLD_SWEEP_RATIOS if ratios is None else ratios
+    rows = []
+    for r in ratios:
+        sel = choose_threshold(y_true, y_proba, fn_cost=r)
+        m = metrics_at_threshold(y_true, y_proba, sel["threshold"])
+        rows.append({
+            "FN:FP cost ratio": r,
+            "Chosen threshold": round(sel["threshold"], 4),
+            "Precision": round(m["Precision"], 4),
+            "Recall": round(m["Recall"], 4),
+            "F1": round(m["F1"], 4),
+            "Accuracy": round(m["Accuracy"], 4),
+        })
+    return rows
+
+
+def threshold_curve(y_true, y_proba, fn_cost: float = None) -> dict:
+    """Precision, recall, F1 and expected cost across the full threshold range.
+
+    Powers the chart that shows why the default 0.5 is not special.
+    """
+    fn_cost = cfg.FN_COST_RATIO if fn_cost is None else fn_cost
+    grid = np.linspace(0.05, 0.95, 91)
+    rows = {"threshold": [], "precision": [], "recall": [], "f1": [], "cost": []}
+    for t in grid:
+        m = metrics_at_threshold(y_true, y_proba, t)
+        rows["threshold"].append(float(t))
+        rows["precision"].append(m["Precision"])
+        rows["recall"].append(m["Recall"])
+        rows["f1"].append(m["F1"])
+        rows["cost"].append(expected_cost(y_true, y_proba, t, fn_cost))
+    rows["fn_cost_ratio"] = float(fn_cost)
+    return rows
+
+
+# ==========================================================================
+# Probability calibration
+# ==========================================================================
+def calibration_report(y_true, y_proba, n_bins: int = None) -> dict:
+    """Is a predicted "70% risk" actually borne out 70% of the time?
+
+    Returns the calibration curve (mean predicted probability against observed
+    frequency, per bin), the Brier score, and -- importantly for this project --
+    the *observed range* of the predicted probabilities.
+
+    That range matters because the application displays these numbers as
+    percentages with a meter, which implies they are calibrated probabilities.
+    If a model's output never leaves, say, 0.34 to 0.78, then it is a compressed
+    relative score and the interface should say so rather than imply a
+    confidence the model never expresses.
+    """
+    from sklearn.calibration import calibration_curve
+    from sklearn.metrics import brier_score_loss
+
+    n_bins = cfg.CALIBRATION_BINS if n_bins is None else n_bins
+    y_true = np.asarray(y_true, dtype=int)
+    y_proba = np.asarray(y_proba, dtype=float)
+
+    # `strategy="quantile"` puts an equal number of students in each bin rather
+    # than slicing the probability axis evenly. With compressed probabilities
+    # the uniform strategy leaves most bins empty.
+    frac_pos, mean_pred = calibration_curve(
+        y_true, y_proba, n_bins=n_bins, strategy="quantile"
+    )
+
+    base_rate = float(y_true.mean())
+    return {
+        "mean_predicted": [float(v) for v in mean_pred],
+        "observed_frequency": [float(v) for v in frac_pos],
+        "n_bins_returned": int(len(mean_pred)),
+        "brier_score": float(brier_score_loss(y_true, y_proba)),
+        # Brier for a constant predictor at the base rate: the reference point.
+        "brier_baseline": float(brier_score_loss(
+            y_true, np.full_like(y_proba, base_rate)
+        )),
+        "proba_min": float(y_proba.min()),
+        "proba_max": float(y_proba.max()),
+        "proba_range": float(y_proba.max() - y_proba.min()),
+        "frac_in_mid_band": float(np.mean((y_proba >= 0.3) & (y_proba <= 0.7))),
+        "frac_near_default": float(np.mean(
+            np.abs(y_proba - cfg.DEFAULT_THRESHOLD) <= 0.1
+        )),
+        "base_rate": base_rate,
+        # Mean absolute gap between predicted and observed, across bins: a
+        # single-number summary of how far off the diagonal the curve sits.
+        "mean_abs_calibration_error": float(
+            np.mean(np.abs(np.array(mean_pred) - np.array(frac_pos)))
+        ) if len(mean_pred) else float("nan"),
+    }
+
+
+def describe_calibration(report: dict) -> str:
+    """One honest sentence about whether these probabilities can be read as such."""
+    rng, mace = report["proba_range"], report["mean_abs_calibration_error"]
+    mid = report["frac_in_mid_band"]
+    if rng < 0.5 or mid > 0.9:
+        verdict = (
+            "heavily compressed -- read these as relative risk scores, not as "
+            "calibrated probabilities"
+        )
+    elif mace > 0.15:
+        verdict = "poorly calibrated -- the stated percentage is not reliable"
+    elif mace > 0.08:
+        verdict = "roughly calibrated, with visible deviation in places"
+    else:
+        verdict = "reasonably well calibrated on this test set"
+    return (
+        f"range {report['proba_min']:.2f}-{report['proba_max']:.2f}, "
+        f"{mid:.0%} of students between 0.3 and 0.7, "
+        f"mean calibration error {mace:.3f} -> {verdict}"
+    )

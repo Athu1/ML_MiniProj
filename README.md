@@ -30,18 +30,19 @@ ensemble — behind an interactive Streamlit application.
 11. [The most important result: what data leakage would have bought us](#11-the-most-important-result-what-data-leakage-would-have-bought-us)
 12. [Results](#12-results)
 13. [Robustness check on the second subject file](#13-robustness-check-on-the-second-subject-file)
-14. [Model comparison](#14-model-comparison)
-15. [Feature importance](#15-feature-importance)
-16. [System architecture](#16-system-architecture)
-17. [Screenshots](#17-screenshots)
-18. [Installation](#18-installation)
-19. [How to run](#19-how-to-run)
-20. [Project structure](#20-project-structure)
-21. [Limitations](#21-limitations)
-22. [Future scope](#22-future-scope)
-23. [Ethical statement](#23-ethical-statement)
-24. [Conclusion](#24-conclusion)
-25. [References](#25-references)
+14. [The decision threshold, and whether the probabilities are real](#14-the-decision-threshold-and-whether-the-probabilities-are-real)
+15. [Model comparison](#15-model-comparison)
+16. [Feature importance](#16-feature-importance)
+17. [System architecture](#17-system-architecture)
+18. [Screenshots](#18-screenshots)
+19. [Installation](#19-installation)
+20. [How to run](#20-how-to-run)
+21. [Project structure](#21-project-structure)
+22. [Limitations](#22-limitations)
+23. [Future scope](#23-future-scope)
+24. [Ethical statement](#24-ethical-statement)
+25. [Conclusion](#25-conclusion)
+26. [References](#26-references)
 ---
 
 ## 1. Problem statement
@@ -532,7 +533,100 @@ sensitive to the base rate.
 The two files are still never combined — 382 students appear in both, so
 concatenating them would put the same student in train and test.
 
-## 14. Model comparison
+## 14. The decision threshold, and whether the probabilities are real
+
+Two things the earlier version of this project reported without checking, both
+now measured.
+
+### The decision threshold is a choice
+
+Every metric in section 12 is measured at a probability cut-off of **0.50** —
+scikit-learn's default, and what `predict()` uses. That is a convention, not a
+result, and on this data it does a lot of work: **76%
+of test students fall within 0.1 of it for Logistic Regression** and
+33% for Random Forest. For those
+students the constant decides the verdict, not the model.
+
+The cut-off is now chosen explicitly, by minimising expected cost under a stated
+ratio: **one missed at-risk student is treated as worth 3
+false alarms** (`FN_COST_RATIO` in `src/config.py`, with the reasoning written
+out there). That ratio is a policy judgement about what a school values, not a
+statistical fact, which is why it is a documented constant and why a sweep over
+other ratios is reported.
+
+**It is chosen from out-of-fold predictions on the training split, never from the
+test set.** `cross_val_predict` refits the pipeline per fold, so every
+probability used for the choice comes from a model that never saw that student;
+the resulting cut-off is then applied unchanged to the held-out test set.
+Choosing it on the test set would be the same error as using `G2`.
+
+| Model | Cut-off | Precision | Recall | F1 | Accuracy |
+|---|---|---|---|---|---|
+| Logistic Regression | 0.50 (default) | 0.4706 | 0.6154 | 0.5333 | 0.6456 |
+| Logistic Regression | **0.398** (cost-tuned) | 0.3571 | **0.9615** | 0.5208 | 0.4177 |
+| SVM (RBF) | 0.50 (default) | 0.5161 | 0.6154 | 0.5614 | 0.6835 |
+| SVM (RBF) | **0.271** (cost-tuned) | 0.4182 | **0.8846** | **0.5679** | 0.5570 |
+| Random Forest | 0.50 (default) | 0.7059 | 0.4615 | 0.5581 | 0.7595 |
+| Random Forest | **0.304** (cost-tuned) | 0.3333 | **0.8077** | 0.4719 | 0.4051 |
+
+Full table in `results/threshold_tuning.csv`; the cost-ratio sweep is in the app.
+
+**What it buys, in students.** At the default cut-off Random Forest misses **14
+of the 26** genuinely at-risk students in the test set. At the tuned cut-off its
+recall rises from 0.462 to
+**0.808**, so it misses about **5** instead.
+
+**What it costs, stated plainly.** Random Forest's precision falls from
+0.706 to 0.333
+and its accuracy from 0.759 to
+0.405 — far below the 0.6709 majority-class
+baseline. The model raises many more alarms. Whether that trade is right depends
+on tutoring capacity, which is exactly why the ratio is explicit.
+
+One honest note in favour of the default ratio: at 3:1 the
+cost-optimal cut-off also happens to maximise *out-of-fold* F1 for all three
+models, so the cost-based and symmetric-metric choices agree there. And for
+**SVM the tuned cut-off improves F1 on the test set too**
+(0.5614 → 0.5679), so for that model
+the change is not even a trade.
+
+### Are the predicted probabilities real? Mostly not
+
+The app shows a risk figure as a percentage with a meter, which implies a
+calibrated probability. Tested against the Brier score — mean squared error of a
+probability, where the reference is a model that ignores its inputs and always
+answers the cohort base rate (32.9%), scoring **0.2208**:
+
+| Model | Brier | vs constant predictor | Mean calibration error | Observed range | Share in [0.3, 0.7] |
+|---|---|---|---|---|---|
+| Logistic Regression | **0.2251** | **worse** | 0.164 | 0.34 – 0.78 | **97%** |
+| SVM (RBF) | 0.1956 | better | 0.097 | 0.15 – 0.74 | 59% |
+| Random Forest | 0.1990 | better | 0.130 | 0.20 – 0.73 | 81% |
+
+**Logistic Regression's probabilities are worse than useless as probabilities.**
+Its Brier score (0.2251) is *above* the
+constant base-rate predictor's (0.2208), and its output never leaves
+0.34–0.78,
+with 97% of students between 0.3
+and 0.7. That is a compressed relative score wearing a percent sign. The cause is
+no mystery: the grid search chose `C = 0.01`, very strong regularisation, which
+shrinks every coefficient toward zero and with it the spread of the output.
+
+SVM and Random Forest do beat the constant predictor
+(0.1956 and 0.1990),
+so their probabilities carry real information — but with mean calibration errors
+of 0.097 and
+0.130 they are only roughly
+calibrated.
+
+**Consequence for the application:** every percentage it displays should be read
+as *"more or less at risk than other students"*, never as *"this student has an
+X% chance of failing"*. The prediction page now says so next to the meter, and
+flags Logistic Regression specifically. Full figures in
+`results/calibration.csv`. Caveat on the caveat: the test set is 79 students, so
+the calibration curve uses 5 equal-count bins of ~15 students and is itself noisy.
+
+## 15. Model comparison
 
 The mechanical ranking puts **SVM (RBF)** first on F1 at **0.5614**. That ranking
 should not be trusted, and the project says so in code rather than in prose:
@@ -569,7 +663,7 @@ Logistic Regression with `C = 0.01` — a heavily regularised linear model, the
 simplest thing in the project — matches a 400-tree forest. When the signal in
 the data is weak and the sample is small, model complexity buys nothing.
 
-## 15. Feature importance
+## 16. Feature importance
 
 Two independent measures were computed for the Random Forest, and **they
 disagree** — which is the more useful finding.
@@ -613,7 +707,7 @@ would raise their grade. Several features are plausibly proxies for
 circumstances the dataset never measures: household stability, work outside
 school, health, prior schooling quality.
 
-## 16. System architecture
+## 17. System architecture
 
 ```mermaid
 flowchart TD
@@ -645,7 +739,7 @@ that fits a model, and `app.py` only ever loads. If the `.pkl` files are missing
 the app says so and tells the user to run the training script — it does not
 silently retrain on every launch.
 
-## 17. Screenshots
+## 18. Screenshots
 
 | Overview | Student Prediction (form) |
 |---|---|
@@ -665,7 +759,7 @@ silently retrain on every launch.
 
 Static figures for the written report are in `results/figures/`.
 
-## 18. Installation
+## 19. Installation
 
 Requires **Python 3.9 or newer**.
 
@@ -682,7 +776,7 @@ pip install -r requirements.txt
 The dataset is already committed under `data/raw/`, so there is nothing to
 download.
 
-## 19. How to run
+## 20. How to run
 
 ### Step 1 — train the models
 
@@ -721,6 +815,26 @@ Opens at <http://localhost:8501>. Seven sections: Overview, Student Prediction,
 Data Analysis, Model Comparison, Model Explainability, Data Leakage, and About
 the Project.
 
+### Optional — run the tests
+
+```bash
+pip install pytest
+pytest
+```
+
+69 tests, about 4 seconds. They guard the project's claims rather than its
+internals: that the **leakage assertion actually fires** (not merely exists),
+that the preprocessor's scaler mean comes from the training split and not the
+full dataset, that the committed metrics in `results/` still match the committed
+models, that the documented data facts hold (38 zero-grade records all with zero
+absences, the +0.034 / −0.213 absences correlation reversal), that raising the
+false-negative cost never *raises* the decision threshold, and that the form
+rejects bad input instead of crashing.
+
+The suite was mutation-tested: deleting the leakage assertion, swapping the
+cost weights, and altering a published metric each make it fail. A test suite
+that cannot fail is not evidence of anything.
+
 ### Optional — the exploratory notebook
 
 ```bash
@@ -731,7 +845,7 @@ This is the data inspection that *preceded* the modelling: it is where the
 `G3 = 0` group, the flat `absences` correlation and the 67.1% baseline were
 found.
 
-## 20. Project structure
+## 21. Project structure
 
 ```
 ML_MiniProj/
@@ -761,6 +875,8 @@ ML_MiniProj/
 │   ├── regression_results.csv
 │   ├── leakage_comparison.csv      the G1/G2 demonstration
 │   ├── robustness_por.csv          same pipeline on the 649-student por file
+│   ├── threshold_tuning.csv        default vs cost-tuned decision cut-off
+│   ├── calibration.csv             are the probabilities real?
 │   ├── feature_importance.csv
 │   ├── metrics_summary.json
 │   └── figures/                    9 static PNGs for the written report
@@ -773,6 +889,14 @@ ML_MiniProj/
 │   ├── prediction.py               model loading and single-student prediction
 │   └── visualization.py            all Plotly figures
 │
+├── tests/                          pytest suite (69 tests)
+│   ├── conftest.py
+│   ├── test_leakage.py             the leakage guard must actually fire
+│   ├── test_data.py                loading, validation, documented data facts
+│   ├── test_metrics.py             metrics, baselines, tie, threshold, calibration
+│   ├── test_prediction.py          the form's prediction path and error handling
+│   └── test_results_integrity.py   committed numbers match the committed models
+│
 ├── notebooks/
 │   └── exploratory_analysis.ipynb  the data inspection that drove the design
 │
@@ -782,7 +906,7 @@ ML_MiniProj/
     └── screenshots/                7 application screenshots
 ```
 
-## 21. Limitations
+## 22. Limitations
 
 Stated plainly, because they bound what the results can be used for.
 
@@ -805,9 +929,12 @@ Stated plainly, because they bound what the results can be used for.
   that implies.
 - **Association, never causation.** Nothing here supports a claim that changing
   a feature would change an outcome.
-- **The 50% probability cut-off is an arbitrary default.** A real deployment
-  would choose the threshold from the relative cost of a missed student versus a
-  false alarm — a policy decision, not a modelling one.
+- **The probabilities are not well calibrated**, and Logistic Regression's are
+  worse than a constant base-rate predictor (section 14). Every percentage the
+  app displays is a ranking signal, not a chance of failing.
+- **The cost ratio behind the tuned threshold (3:1) is a judgement, not a
+  finding.** It is documented in `src/config.py` and swept in the app, but a
+  real deployment would derive it from actual tutoring capacity.
 - **Ordinal features are treated as evenly spaced numerics**, which assumes the
   gap from "under 2 hours" to "2–5 hours" equals the gap from "5–10" to "over
   10". A reasonable simplification, not a free one.
@@ -815,14 +942,15 @@ Stated plainly, because they bound what the results can be used for.
   so the CV figures are optimistic. The held-out test figures are the honest
   ones.
 
-## 22. Future scope
+## 23. Future scope
 
 - **More and more recent data**, across multiple institutions, to test whether
   any of this generalises.
-- **Tune the decision threshold explicitly** against a stated cost ratio for
-  missed students versus false alarms, instead of accepting 0.5. Given the
-  precision/recall spread in section 12, this would likely improve practical
-  usefulness more than any change of algorithm.
+- **Recalibrate the probabilities** (isotonic or Platt scaling on a held-out
+  fold) so the displayed percentages can be read as probabilities rather than
+  rankings. Section 14 shows Logistic Regression's are currently worse than a
+  constant predictor; this is the clearest remaining defect in what the
+  application actually shows a user.
 - **Engagement over time** — weekly submissions, LMS logins, assignment
   timeliness — rather than a single end-of-year absence count. Trends should
   carry far more signal than totals, and the `absences` finding makes the case
@@ -839,7 +967,7 @@ Stated plainly, because they bound what the results can be used for.
 - **Calibration analysis**, since the reported probabilities are currently taken
   at face value and the SVM's are Platt-scaled approximations.
 
-## 23. Ethical statement
+## 24. Ethical statement
 
 This system is an **academic machine-learning demonstration** and must not be
 used to make high-stakes decisions about students.
@@ -862,7 +990,7 @@ access-controlled, retained only as long as needed, and subject to human review.
 A model should only ever help decide **who a teacher talks to first** — never
 replace that conversation.
 
-## 24. Conclusion
+## 25. Conclusion
 
 This project implements and compares four machine learning algorithms on a real
 student-performance dataset, with the constraint that no model may see a grade as
@@ -899,7 +1027,7 @@ feature importance, and data visualisation. The project's distinguishing feature
 is that it treats a weak result as a finding to explain rather than a number to
 inflate.
 
-## 25. References
+## 26. References
 
 1. P. Cortez and A. Silva. "Using Data Mining to Predict Secondary School Student
    Performance." In A. Brito and J. Teixeira (eds.), *Proceedings of 5th FUture

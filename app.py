@@ -463,12 +463,23 @@ def render_prediction():
         )
 
         st.markdown("")
-        chosen_model = st.selectbox(
+        c = st.columns(2)
+        chosen_model = c[0].selectbox(
             "Which classifier should give the verdict?",
             cfg.CLASSIFICATION_MODEL_NAMES,
             index=cfg.CLASSIFICATION_MODEL_NAMES.index(PRIMARY_MODEL),
             help="All three are shown in the results. Random Forest is the "
                  "project's primary model.",
+        )
+        threshold_choice = c[1].selectbox(
+            "Decision cut-off",
+            ["Cost-tuned (recommended)", "Default 0.50"],
+            index=0,
+            help="The cut-off is the probability above which a student is "
+                 "flagged. The cost-tuned value was chosen from out-of-fold "
+                 "training predictions to treat one missed at-risk student as "
+                 f"worth {cfg.FN_COST_RATIO:.0f} false alarms. The default 0.50 "
+                 "is what every metric in the comparison tables is measured at.",
         )
         submitted = st.form_submit_button("Predict", type="primary",
                                           width="stretch")
@@ -506,8 +517,12 @@ def render_prediction():
         Walc=Walc, traveltime=traveltime, activities=activities,
     )
 
+    tuned = (META["classification"][chosen_model].get("threshold") or {}).get("threshold")
+    use_threshold = tuned if (threshold_choice.startswith("Cost-tuned") and tuned) else None
+
     try:
-        result = pr.predict_student(student, MODELS, META, classifier=chosen_model)
+        result = pr.predict_student(student, MODELS, META, classifier=chosen_model,
+                                    threshold=use_threshold)
     except pr.InvalidStudentInputError as exc:
         st.error(f"That student profile could not be scored: {exc}")
         return
@@ -548,8 +563,54 @@ def render_prediction():
             unsafe_allow_html=True,
         )
         if result["risk_probability"] is not None:
-            st.plotly_chart(vz.risk_probability_bar(result["risk_probability"]),
-                            width="stretch")
+            st.plotly_chart(
+                vz.risk_probability_bar(result["risk_probability"],
+                                        threshold=result["threshold_used"]),
+                width="stretch",
+            )
+            cal = META["classification"][chosen_model].get("calibration")
+            if cal:
+                compressed = (cal["brier_score"] >= cal["brier_baseline"]
+                              or cal["proba_range"] < 0.5)
+                st.caption(
+                    ("⚠️ **Read this as a ranking, not a probability.** "
+                     if compressed else "**A note on this percentage.** ")
+                    + f"{chosen_model}'s output on the test set only ever spans "
+                      f"{cal['proba_min']:.0%} to {cal['proba_max']:.0%}"
+                    + (f", and its Brier score ({cal['brier_score']:.4f}) is worse "
+                       f"than a model that always answers the cohort base rate "
+                       f"({cal['brier_baseline']:.4f}). The number ranks this "
+                       f"student against others; it is not a calibrated chance "
+                       f"of failing."
+                       if compressed else
+                       f". It beats a constant base-rate predictor "
+                       f"({cal['brier_score']:.4f} vs {cal['brier_baseline']:.4f}), "
+                       f"but with a mean calibration error of "
+                       f"{cal['mean_abs_calibration_error']:.3f} it is only "
+                       f"roughly calibrated.")
+                    + " See *Are the predicted probabilities real?* in Model Comparison."
+                )
+
+    st.caption(
+        f"Verdict issued at a cut-off of **{result['threshold_used']:.3f}**"
+        + (f" — the cost-tuned value, chosen from out-of-fold training "
+           f"predictions at FN:FP = {cfg.FN_COST_RATIO:.0f}:1."
+           if result["threshold_is_tuned"]
+           else " — scikit-learn's default, which is what the metrics in the "
+                "Model Comparison tables are measured at.")
+    )
+
+    if result["threshold_decided_it"]:
+        other = cfg.POSITIVE_CLASS_LABEL if result["alt_at_risk"] else cfg.NEGATIVE_CLASS_LABEL
+        st.warning(
+            f"**The cut-off decided this student, not the model.** At the other "
+            f"cut-off ({result['alt_threshold']:.3f}) the same model, with the "
+            f"same probability of {result['risk_probability']:.1%}, would have "
+            f"said **{other}**. This student sits between the two thresholds, so "
+            f"the verdict reflects a policy choice about how many false alarms "
+            f"are acceptable — see the *decision threshold* section of Model "
+            f"Comparison."
+        )
 
     if result.get("probability_disagrees_with_label"):
         st.info(
@@ -908,6 +969,162 @@ students it flagged, **{conf['TP']}** really were at risk, a precision of
         f"the best reaches {max(m['ROC-AUC'] for m in CLF_METRICS.values()):.3f} "
         "against 0.500 for random guessing. This is the metric that is least "
         "affected by the class imbalance and by the choice of a 50% cut-off."
+    )
+
+    st.markdown("### The decision threshold is a choice, not a given")
+    st.markdown(
+        f"""<p class="lede">Everything above is measured at a probability cut-off
+        of <b>{cfg.DEFAULT_THRESHOLD:.2f}</b> &mdash; scikit-learn's default, and
+        what <code>predict()</code> uses. That number is a convention, not a
+        result. On this test set
+        <b>{max(CLF[m]['calibration']['frac_near_default'] for m in cfg.CLASSIFICATION_MODEL_NAMES):.0%}
+        of students</b> (for the worst-affected model) fall within 0.1 of it, so
+        for those students the verdict is decided by the constant rather than by
+        the model.</p>""",
+        unsafe_allow_html=True,
+    )
+
+    thr_model = st.radio("Model", cfg.CLASSIFICATION_MODEL_NAMES, horizontal=True,
+                         label_visibility="collapsed", key="thr_model")
+    thr = CLF[thr_model]["threshold"]
+    st.plotly_chart(
+        vz.threshold_tradeoff(CLF[thr_model]["threshold_curve"],
+                              cfg.DEFAULT_THRESHOLD, thr["threshold"], thr_model),
+        width="stretch",
+    )
+
+    st.markdown(
+        f"""<div class="caveat">
+        <b>How the cut-off was chosen, and why it is not cheating.</b> A
+        threshold picked from the test set would be a parameter tuned on the
+        data used to report the result &mdash; the same mistake as using
+        <code>G2</code>. So it is chosen instead from <b>out-of-fold predictions
+        on the training split</b>: every probability used for the choice comes
+        from a model that never saw that student. The resulting cut-off
+        ({thr['threshold']:.3f} for {thr_model}) is then applied, unchanged, to
+        the held-out test set.<br><br>
+        The cost ratio is the policy input: this project sets
+        <b>FN:FP = {cfg.FN_COST_RATIO:.0f}:1</b>, meaning one missed at-risk
+        student is treated as worth {cfg.FN_COST_RATIO:.0f} unnecessary
+        conversations. That is a judgement about what a school values, not a
+        statistical fact, so the sweep below shows what other ratios would give.
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("#### Default cut-off vs cost-tuned, on the held-out test set")
+    rows = []
+    for name in cfg.CLASSIFICATION_MODEL_NAMES:
+        ti, tm, base = CLF[name]["threshold"], CLF[name]["tuned_metrics"], CLF_METRICS[name]
+        if not ti:
+            continue
+        rows.append({"Model": name, "Cut-off": f"{cfg.DEFAULT_THRESHOLD:.2f} (default)",
+                     "Precision": round(base["Precision"], 4),
+                     "Recall": round(base["Recall"], 4), "F1": round(base["F1"], 4),
+                     "Accuracy": round(base["Accuracy"], 4),
+                     "At-risk students missed": CLF[name]["confusion"]["FN"]})
+        n_pos = CLF[name]["confusion"]["TP"] + CLF[name]["confusion"]["FN"]
+        rows.append({"Model": name,
+                     "Cut-off": f"{ti['threshold']:.3f} (cost-tuned)",
+                     "Precision": round(tm["Precision"], 4),
+                     "Recall": round(tm["Recall"], 4), "F1": round(tm["F1"], 4),
+                     "Accuracy": round(tm["Accuracy"], 4),
+                     "At-risk students missed": int(round(n_pos * (1 - tm["Recall"])))})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+    rf_thr = CLF[PRIMARY_MODEL]
+    st.markdown(
+        f"""<div class="caveat">
+        <b>What it buys and what it costs, in students.</b> At the default
+        cut-off {PRIMARY_MODEL} misses
+        <b>{rf_thr['confusion']['FN']} of the
+        {rf_thr['confusion']['TP'] + rf_thr['confusion']['FN']}</b> genuinely
+        at-risk students in the test set. At the cost-tuned cut-off its recall
+        rises from {CLF_METRICS[PRIMARY_MODEL]['Recall']:.3f} to
+        <b>{rf_thr['tuned_metrics']['Recall']:.3f}</b>, so it misses around
+        <b>{int(round((rf_thr['confusion']['TP'] + rf_thr['confusion']['FN']) * (1 - rf_thr['tuned_metrics']['Recall'])))}</b>
+        instead.<br><br>
+        The price is real and should be stated: precision falls from
+        {CLF_METRICS[PRIMARY_MODEL]['Precision']:.3f} to
+        {rf_thr['tuned_metrics']['Precision']:.3f} and accuracy from
+        {CLF_METRICS[PRIMARY_MODEL]['Accuracy']:.3f} to
+        {rf_thr['tuned_metrics']['Accuracy']:.3f} &mdash; well below the
+        {BASELINE['Accuracy']:.3f} majority-class baseline. A model at this
+        cut-off raises many more alarms. Whether that is the right trade is a
+        question about tutoring capacity, which is why the ratio is a documented
+        constant in <code>src/config.py</code> rather than a hidden default.
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+    with st.expander(f"How the cut-off moves with the cost ratio ({thr_model})"):
+        st.dataframe(pd.DataFrame(CLF[thr_model]["threshold_sweep"]),
+                     hide_index=True, width="stretch")
+        st.caption(
+            "Computed on out-of-fold training predictions, which is where the "
+            "choice is made. Recall rises monotonically with the ratio, as it "
+            "must. Note that at the project's chosen 3:1 the cost-optimal "
+            "cut-off also happens to maximise out-of-fold F1 for all three "
+            "models — the cost-based and symmetric-metric choices agree there, "
+            "which is a useful sanity check on the default."
+        )
+
+    st.markdown("### Are the predicted probabilities real?")
+    st.markdown(
+        '<p class="lede">The prediction page displays a risk figure as a '
+        'percentage with a meter, which implies it is a calibrated probability. '
+        'That implication needs testing rather than assuming &mdash; so here it '
+        'is tested.</p>',
+        unsafe_allow_html=True,
+    )
+    cals = {m: CLF[m]["calibration"] for m in cfg.CLASSIFICATION_MODEL_NAMES
+            if CLF[m].get("calibration")}
+    left, right = st.columns([1, 1])
+    with left:
+        st.plotly_chart(vz.calibration_chart(cals), width="stretch")
+    with right:
+        st.plotly_chart(vz.probability_spread(cals), width="stretch")
+        st.dataframe(
+            pd.DataFrame([{
+                "Model": m,
+                "Brier": round(c["brier_score"], 4),
+                "Brier, constant predictor": round(c["brier_baseline"], 4),
+                "Better than constant?": "yes" if c["brier_score"] < c["brier_baseline"] else "NO",
+            } for m, c in cals.items()]),
+            hide_index=True, width="stretch",
+        )
+
+    worst = max(cals, key=lambda m: cals[m]["brier_score"])
+    failing = [m for m, c in cals.items() if c["brier_score"] >= c["brier_baseline"]]
+    st.markdown(
+        f"""<div class="caveat">
+        <b>The honest answer is mostly no.</b> The Brier score measures the mean
+        squared error of a probability, so lower is better and the reference
+        point is a model that ignores its inputs and always answers the cohort
+        base rate ({cals[worst]['base_rate']:.1%}), scoring
+        {cals[worst]['brier_baseline']:.4f}.<br><br>
+        <b>{worst} scores {cals[worst]['brier_score']:.4f} &mdash; worse than
+        that constant predictor.</b> Its output ranges only
+        {cals[worst]['proba_min']:.2f} to {cals[worst]['proba_max']:.2f}, with
+        {cals[worst]['frac_in_mid_band']:.0%} of students between 0.3 and 0.7.
+        It is a compressed relative score, not a probability, and the figure it
+        displays should be read as "more or less at risk than other students",
+        never as "this student has an X% chance of failing".<br><br>
+        {'The other two models do beat the constant predictor ('
+         + ', '.join(f"{m} {cals[m]['brier_score']:.4f}" for m in cals
+                     if m not in failing)
+         + '), so their probabilities carry real information — but with mean '
+           'calibration errors of '
+         + ' and '.join(f"{cals[m]['mean_abs_calibration_error']:.3f}" for m in cals
+                        if m not in failing)
+         + ' they are still only roughly calibrated. ' if failing else ''}
+        Treat every percentage in this application as a ranking signal. Note too
+        that the test set is only {META['n_test']} students, so the curve is
+        built from {cfg.CALIBRATION_BINS} equal-count bins of about
+        {META['n_test'] // cfg.CALIBRATION_BINS} students each and is itself
+        noisy.
+        </div>""",
+        unsafe_allow_html=True,
     )
 
     st.markdown("### Regression task")
