@@ -1,21 +1,30 @@
 """
-Data loading, validation, target construction and the preprocessing pipeline.
+Data loading, validation, cleaning, target construction and the preprocessing
+pipeline.
 
 Design rules enforced here
 --------------------------
-1. The raw file is validated against the shape UCI documents, so a truncated or
-   substituted download fails loudly instead of being trained on quietly.
-2. The at-risk label is derived from G3 and then G3/G1/G2 are *removed* from the
-   feature matrix. No model in this project ever sees a grade as an input
-   (except the explicitly-labelled leakage demonstration).
-3. The preprocessor is a scikit-learn ColumnTransformer wrapped inside each
-   model's Pipeline. Because it lives inside the Pipeline, `fit` only ever sees
-   training rows -- the scaler's mean/std and the encoder's category list are
-   never computed from test data.
+1. The raw file is validated against the shape and checksum this project was
+   built on, so a truncated or substituted file fails loudly instead of being
+   trained on quietly.
+2. Exact duplicate listings are removed BEFORE the train/test split. The raw
+   file contains 1,202 of them (about 15%); left in, the same car lands in both
+   the training and the test set and the test score measures memory, not skill.
+   The effect is measured, not assumed -- see `train_models.py`.
+3. The premium label is derived from the price, and the price, the label and the
+   free-text name are then removed from the feature matrix. No model ever sees
+   them as an input.
+4. The preprocessor is a scikit-learn ColumnTransformer wrapped inside each
+   model's Pipeline, so `fit` only ever sees training rows: the scaler's mean and
+   the encoder's category list are never computed from test data.
 """
 
 from __future__ import annotations
 
+import hashlib
+import warnings
+
+import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
@@ -24,94 +33,119 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 import config as cfg
 
+# The first word of `name` is the brand, except where the brand is two words.
+BRAND_FIXES = {"Land": "Land Rover", "Force": "Force Motors", "Ashok": "Ashok Leyland"}
+
 
 class DatasetError(RuntimeError):
-    """Raised when the dataset is missing or does not match the UCI spec."""
+    """Raised when the dataset is missing or does not match what was documented."""
 
 
 # --------------------------------------------------------------------------
 # Loading
 # --------------------------------------------------------------------------
-def load_raw(dataset: str = cfg.DEFAULT_DATASET, validate: bool = True) -> pd.DataFrame:
-    """Load one of the UCI Student Performance files.
+def file_sha256(path=None) -> str:
+    path = cfg.DATASET_FILE if path is None else path
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
-    The published files use ';' as the separator. Some mirrors re-save them with
-    ','; both are handled by sniffing which separator yields the 33 documented
-    columns, so provenance differences do not silently produce a 1-column frame.
+
+def load_raw(validate: bool = True) -> pd.DataFrame:
+    """Load the raw CSV exactly as published, with only the one column renamed.
+
+    The shape is a hard check. The checksum is a warning rather than an error,
+    because a student who opens the file in a spreadsheet and re-saves it changes
+    the bytes without changing the data; the warning says the documented results
+    may then differ.
     """
-    if dataset not in cfg.DATASET_FILES:
-        raise DatasetError(
-            f"Unknown dataset {dataset!r}. Choose one of {sorted(cfg.DATASET_FILES)}."
-        )
-
-    path = cfg.DATASET_FILES[dataset]
+    path = cfg.DATASET_FILE
     if not path.exists():
         raise DatasetError(
             f"Dataset file not found: {path}\n"
-            "Place the UCI Student Performance CSV files in data/raw/ "
-            "(see the Dataset section of README.md for the download link)."
+            "Place cardekho.csv in data/raw/ (see the Dataset section of README.md)."
         )
 
-    df = None
-    for sep in (";", ","):
-        candidate = pd.read_csv(path, sep=sep)
-        if candidate.shape[1] == 33:
-            df = candidate
-            break
-    if df is None:
-        raise DatasetError(
-            f"{path.name} did not parse into the 33 columns documented by UCI "
-            "with either ';' or ',' as the separator. The file may be corrupted."
-        )
+    try:
+        df = pd.read_csv(path)
+    except Exception as exc:
+        raise DatasetError(f"{path.name} could not be read as CSV: {exc}") from exc
 
-    # Object columns in the raw files are quoted ("GP"); strip stray quotes/space.
-    for col in df.select_dtypes(include=["object", "string"]).columns:
-        df[col] = df[col].astype(str).str.strip().str.strip('"')
+    df = df.rename(columns=cfg.RAW_RENAMES)
 
     if validate:
-        expected = cfg.EXPECTED_SHAPES.get(dataset)
-        if expected and df.shape != expected:
+        if df.shape != cfg.EXPECTED_RAW_SHAPE:
             raise DatasetError(
-                f"{path.name} has shape {df.shape} but UCI documents {expected}. "
-                "Refusing to train on a file that does not match the published "
-                "dataset."
+                f"{path.name} has shape {df.shape} but this project was built on "
+                f"{cfg.EXPECTED_RAW_SHAPE}. Refusing to train on a file that does "
+                "not match."
             )
-
+        if file_sha256(path) != cfg.EXPECTED_SHA256:
+            warnings.warn(
+                f"{path.name} has the expected shape but its checksum differs from "
+                "the file the documented results were produced from. Results may "
+                "differ slightly.",
+                stacklevel=2,
+            )
     return df
 
 
-def add_target(df: pd.DataFrame) -> pd.DataFrame:
-    """Append the binary `at_risk` label derived from the final grade G3.
+def duplicate_summary(raw: pd.DataFrame) -> dict:
+    """How many exact duplicate listings the raw file holds."""
+    dup = raw.duplicated(keep="first")
+    return {
+        "n_rows": int(len(raw)),
+        "n_duplicates": int(dup.sum()),
+        "pct_duplicates": float(dup.mean() * 100),
+        "n_unique": int((~dup).sum()),
+    }
 
-    Threshold: G3 < 10 on the 0-20 Portuguese scale, i.e. below the pass mark.
+
+# --------------------------------------------------------------------------
+# Cleaning
+# --------------------------------------------------------------------------
+def clean(raw: pd.DataFrame, dedupe: bool = True) -> pd.DataFrame:
+    """Turn the raw listings into a modelling table.
+
+    * `max_power` is stored as text in the raw file (one value is a blank space),
+      so it is coerced to a number; anything unparseable becomes missing and is
+      imputed later, inside the pipeline.
+    * `age` replaces `year`; `brand` is cut from `name`.
+    * Exact duplicate rows are dropped first when `dedupe` is True. `dedupe=False`
+      exists only to power the duplicate-leakage demonstration.
     """
-    out = df.copy()
-    out[cfg.CLASSIFICATION_TARGET] = (
-        out[cfg.REGRESSION_TARGET] < cfg.AT_RISK_THRESHOLD
+    df = raw.copy()
+
+    for col in df.select_dtypes(include=["object", "string"]).columns:
+        df[col] = df[col].astype(str).str.strip()
+
+    if dedupe:
+        df = df.drop_duplicates(keep="first")
+
+    df["max_power"] = pd.to_numeric(df["max_power"], errors="coerce")
+    df["age"] = cfg.REFERENCE_YEAR - df["year"]
+
+    first_word = df["name"].str.split().str[0]
+    df["brand"] = first_word.replace(BRAND_FIXES)
+
+    df[cfg.CLASSIFICATION_TARGET] = (
+        df[cfg.REGRESSION_TARGET] >= cfg.PREMIUM_THRESHOLD
     ).astype(int)
-    return out
+
+    return df.reset_index(drop=True)
 
 
-def load_dataset(dataset: str = cfg.DEFAULT_DATASET) -> pd.DataFrame:
-    """Load a raw file and attach the at-risk target. The usual entry point."""
-    return add_target(load_raw(dataset))
+def load_dataset(dedupe: bool = True) -> pd.DataFrame:
+    """Load, validate and clean. The usual entry point."""
+    return clean(load_raw(), dedupe=dedupe)
 
 
 # --------------------------------------------------------------------------
 # Feature / target split
 # --------------------------------------------------------------------------
-def split_features_target(
-    df: pd.DataFrame, task: str = "classification", leaky: bool = False
-):
-    """Return (X, y) with every leakage-prone column stripped from X.
+def split_features_target(df: pd.DataFrame, task: str = "classification"):
+    """Return (X, y) with every target-derived column stripped from X.
 
-    Parameters
-    ----------
-    task   : "classification" -> y is the at_risk label
-             "regression"     -> y is the final grade G3
-    leaky  : when True, G1 and G2 are *kept* in X. This exists only to power the
-             side-by-side "what data leakage does to your metrics" comparison and
-             is never used for the models the application predicts with.
+    task = "classification" -> y is the 0/1 premium label
+    task = "regression"     -> y is the selling price in rupees
     """
     if task == "classification":
         y = df[cfg.CLASSIFICATION_TARGET]
@@ -120,16 +154,10 @@ def split_features_target(
     else:
         raise ValueError("task must be 'classification' or 'regression'")
 
-    numeric = list(cfg.NUMERIC_FEATURES)
-    if leaky:
-        numeric = numeric + list(cfg.LEAKY_EXTRA_NUMERIC)
+    X = df[list(cfg.NUMERIC_FEATURES) + list(cfg.CATEGORICAL_FEATURES)].copy()
 
-    X = df[numeric + list(cfg.CATEGORICAL_FEATURES)].copy()
-
-    # Belt-and-braces: assert no target-derived column survived into X.
-    forbidden = {cfg.REGRESSION_TARGET, cfg.CLASSIFICATION_TARGET}
-    if not leaky:
-        forbidden |= set(cfg.LEAKY_EXTRA_NUMERIC)
+    # Belt-and-braces: assert nothing derived from the target survived into X.
+    forbidden = {cfg.REGRESSION_TARGET, cfg.CLASSIFICATION_TARGET, "name", "year"}
     present = forbidden.intersection(X.columns)
     if present:
         raise AssertionError(
@@ -145,25 +173,26 @@ def split_features_target(
 def build_preprocessor(
     numeric_features: list[str] | None = None,
     categorical_features: list[str] | None = None,
-    scale_numeric: bool = True,
 ) -> ColumnTransformer:
     """Build the shared preprocessing ColumnTransformer.
 
-    Numeric branch      : median imputation -> StandardScaler
-    Categorical branch  : most-frequent imputation -> OneHotEncoder
+    Numeric branch   : median imputation -> StandardScaler
+    Brand branch     : OneHotEncoder that pools rare and unseen brands
+    Other categoricals: most-frequent imputation -> OneHotEncoder
 
-    `scale_numeric=False` is available for Random Forest, which is invariant to
-    monotonic rescaling of its inputs, but the project keeps scaling on for all
-    models so that exactly one preprocessing definition has to be explained and
-    audited. Scaling is *required* for Logistic Regression and SVM: both are
-    distance/penalty based, and `absences` (0-93) would otherwise dominate
-    `studytime` (1-4) purely because of its units.
+    Median imputation matters here: 221 cars are missing mileage, engine and
+    seats together, and 215 are missing max_power. A median is not pulled by the
+    ten-million-rupee luxury cars the way a mean would be.
 
-    `drop="if_binary"` keeps one column per yes/no feature, which avoids
-    redundant collinear dummies and makes the Logistic Regression coefficients
-    directly readable. `handle_unknown="ignore"` means a category the model never
-    saw during training is encoded as all-zeros rather than raising -- important
-    for the Streamlit form, where a user could submit an unexpected value.
+    Scaling is required for Logistic Regression and the SVM: `km_driven` runs to
+    the hundreds of thousands while `seats` is 2-14, and the RBF kernel is a
+    function of squared distance, so without scaling the odometer alone would
+    dominate every prediction. Random Forest does not need it but shares the
+    preprocessor so one definition has to be explained.
+
+    `min_frequency` pools any brand with fewer than MIN_BRAND_FREQUENCY training
+    cars (and any brand never seen) into one "infrequent" column. `drop="if_binary"`
+    keeps one column per two-level feature such as transmission.
     """
     numeric_features = list(
         cfg.NUMERIC_FEATURES if numeric_features is None else numeric_features
@@ -172,33 +201,35 @@ def build_preprocessor(
         cfg.CATEGORICAL_FEATURES if categorical_features is None
         else categorical_features
     )
+    other_cats = [c for c in categorical_features if c != "brand"]
 
-    numeric_steps = [("imputer", SimpleImputer(strategy="median"))]
-    if scale_numeric:
-        numeric_steps.append(("scaler", StandardScaler()))
-
-    numeric_pipe = Pipeline(numeric_steps)
-
-    categorical_pipe = Pipeline(
-        [
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            (
-                "onehot",
-                OneHotEncoder(
-                    drop="if_binary",
-                    handle_unknown="ignore",
-                    sparse_output=False,
-                ),
-            ),
-        ]
+    numeric_pipe = Pipeline(
+        [("imputer", SimpleImputer(strategy="median")),
+         ("scaler", StandardScaler())]
+    )
+    brand_pipe = Pipeline(
+        [("imputer", SimpleImputer(strategy="most_frequent")),
+         ("onehot", OneHotEncoder(
+             handle_unknown="infrequent_if_exist",
+             min_frequency=cfg.MIN_BRAND_FREQUENCY,
+             sparse_output=False,
+         ))]
+    )
+    cat_pipe = Pipeline(
+        [("imputer", SimpleImputer(strategy="most_frequent")),
+         ("onehot", OneHotEncoder(
+             drop="if_binary", handle_unknown="ignore", sparse_output=False,
+         ))]
     )
 
+    transformers = [("num", numeric_pipe, numeric_features)]
+    if "brand" in categorical_features:
+        transformers.append(("brand", brand_pipe, ["brand"]))
+    if other_cats:
+        transformers.append(("cat", cat_pipe, other_cats))
+
     return ColumnTransformer(
-        transformers=[
-            ("num", numeric_pipe, numeric_features),
-            ("cat", categorical_pipe, categorical_features),
-        ],
-        remainder="drop",
+        transformers=transformers, remainder="drop",
         verbose_feature_names_out=False,
     )
 
@@ -209,39 +240,63 @@ def get_feature_names(fitted_preprocessor: ColumnTransformer) -> list[str]:
 
 
 # --------------------------------------------------------------------------
-# Small helpers used by the UI / reports
+# Helpers used by the UI and the reports
 # --------------------------------------------------------------------------
-def dataset_summary(df: pd.DataFrame) -> dict:
+def dataset_summary(raw: pd.DataFrame, df: pd.DataFrame) -> dict:
     """Headline numbers for the dashboard metric cards."""
-    at_risk = df[cfg.CLASSIFICATION_TARGET]
+    prem = df[cfg.CLASSIFICATION_TARGET]
+    price = df[cfg.REGRESSION_TARGET]
+    dup = duplicate_summary(raw)
     return {
-        "n_students": int(len(df)),
-        "n_raw_columns": int(df.shape[1] - 1),  # minus the derived at_risk column
+        "n_raw_rows": dup["n_rows"],
+        "n_duplicates_removed": dup["n_duplicates"],
+        "pct_duplicates": dup["pct_duplicates"],
+        "n_cars": int(len(df)),
+        "n_raw_columns": int(raw.shape[1]),
         "n_model_features": len(cfg.ALL_FEATURES),
         "n_numeric_features": len(cfg.NUMERIC_FEATURES),
         "n_categorical_features": len(cfg.CATEGORICAL_FEATURES),
-        "n_at_risk": int(at_risk.sum()),
-        "n_not_at_risk": int(len(at_risk) - at_risk.sum()),
-        "pct_at_risk": float(at_risk.mean() * 100),
-        "majority_class_accuracy": float(max(at_risk.mean(), 1 - at_risk.mean())),
-        "mean_g3": float(df[cfg.REGRESSION_TARGET].mean()),
-        "median_g3": float(df[cfg.REGRESSION_TARGET].median()),
-        "n_zero_g3": int((df[cfg.REGRESSION_TARGET] == 0).sum()),
-        "missing_values": int(df.isna().sum().sum()),
-        "duplicate_rows": int(df.duplicated().sum()),
+        "n_premium": int(prem.sum()),
+        "n_standard": int(len(prem) - prem.sum()),
+        "pct_premium": float(prem.mean() * 100),
+        "majority_class_accuracy": float(max(prem.mean(), 1 - prem.mean())),
+        "median_price": float(price.median()),
+        "mean_price": float(price.mean()),
+        "min_price": float(price.min()),
+        "max_price": float(price.max()),
+        "price_skew": float(price.skew()),
+        "missing_cells_clean": int(df[cfg.ALL_FEATURES].isna().sum().sum()),
+        "n_rows_missing_specs": int(
+            df[["mileage", "engine", "seats"]].isna().all(axis=1).sum()
+        ),
+        "n_missing_max_power": int(df["max_power"].isna().sum()),
     }
 
 
-def default_student_profile(df: pd.DataFrame) -> dict:
-    """A 'typical student' used to pre-fill the form and to fill hidden features.
+def default_car_profile(df: pd.DataFrame) -> dict:
+    """A 'typical car' used to pre-fill the form.
 
-    Numeric features take the dataset median, categorical features the mode.
-    Being explicit about this matters: the UI tells the user that features not
-    shown on the form are held at these population-typical values.
+    Numeric features take the median, categorical features the mode.
     """
     profile = {}
     for col in cfg.NUMERIC_FEATURES:
-        profile[col] = int(round(float(df[col].median())))
+        profile[col] = float(df[col].median())
     for col in cfg.CATEGORICAL_FEATURES:
         profile[col] = str(df[col].mode().iloc[0])
+    profile["age"] = int(round(profile["age"]))
+    profile["seats"] = int(round(profile["seats"]))
+    profile["engine"] = int(round(profile["engine"]))
     return profile
+
+
+def feature_ranges(df: pd.DataFrame) -> dict:
+    """Observed min / max of each numeric feature, to warn on extrapolation."""
+    return {
+        col: {"min": float(df[col].min()), "max": float(df[col].max())}
+        for col in cfg.NUMERIC_FEATURES
+    }
+
+
+def known_brands(df: pd.DataFrame) -> list[str]:
+    """Brands ordered by how many cars they have, for the form dropdown."""
+    return df["brand"].value_counts().index.tolist()

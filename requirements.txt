@@ -1,4 +1,4 @@
-# Student Academic Performance & At-Risk Prediction System
+# Used Car Price & Premium Prediction System
 #
 # Versions are lower-bounded at the ones this project was developed and tested
 # with, so a fresh install reproduces the documented results. Install with:

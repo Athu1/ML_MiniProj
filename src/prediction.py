@@ -1,5 +1,5 @@
 """
-Loading the trained pipelines and predicting for a single student.
+Loading the trained pipelines and predicting the price of a single car.
 
 The Streamlit app never trains anything. It loads the pipelines saved by
 `src/train_models.py`; if they are missing it says so and stops. Because each
@@ -33,8 +33,8 @@ class ModelsNotTrainedError(RuntimeError):
     """Raised when the saved model files are missing or unreadable."""
 
 
-class InvalidStudentInputError(ValueError):
-    """Raised when a submitted student profile cannot be scored."""
+class InvalidCarInputError(ValueError):
+    """Raised when a submitted car profile cannot be scored."""
 
 
 # --------------------------------------------------------------------------
@@ -81,80 +81,80 @@ def load_artifacts() -> tuple[dict, dict]:
 # --------------------------------------------------------------------------
 # Input validation
 # --------------------------------------------------------------------------
-def build_input_row(student: dict, default_profile: dict) -> pd.DataFrame:
+def build_input_row(car: dict, default_profile: dict) -> pd.DataFrame:
     """Turn a form submission into the single-row DataFrame the pipelines expect.
 
     Features the form does not expose are filled from `default_profile` (the
-    dataset median for numeric columns, the mode for categorical ones). The UI
-    states that this is happening, so a prediction is never silently based on
-    values the user did not supply and does not know about.
+    dataset median for numeric columns, the mode for categorical ones).
     """
-    if not isinstance(student, dict) or not student:
-        raise InvalidStudentInputError("No student details were provided.")
+    if not isinstance(car, dict) or not car:
+        raise InvalidCarInputError("No car details were provided.")
 
     row = {}
     for col in cfg.ALL_FEATURES:
-        value = student.get(col, default_profile.get(col))
+        value = car.get(col, default_profile.get(col))
         if value is None:
-            raise InvalidStudentInputError(
+            raise InvalidCarInputError(
                 f"No value available for the required feature '{col}'."
             )
         row[col] = value
 
-    # Numeric columns must actually be numeric and finite.
     for col in cfg.NUMERIC_FEATURES:
+        label = cfg.FEATURE_LABELS.get(col, col)
         try:
             row[col] = float(row[col])
         except (TypeError, ValueError) as exc:
-            raise InvalidStudentInputError(
-                f"'{cfg.FEATURE_LABELS.get(col, col)}' must be a number, "
-                f"got {row[col]!r}."
+            raise InvalidCarInputError(
+                f"'{label}' must be a number, got {row[col]!r}."
             ) from exc
         if not np.isfinite(row[col]):
-            raise InvalidStudentInputError(
-                f"'{cfg.FEATURE_LABELS.get(col, col)}' must be a finite number."
-            )
+            raise InvalidCarInputError(f"'{label}' must be a finite number.")
+        if col in ("age", "km_driven", "engine", "max_power", "seats") and row[col] < 0:
+            raise InvalidCarInputError(f"'{label}' cannot be negative.")
 
-    # Categorical columns are passed through as strings. An unexpected level is
-    # not an error: OneHotEncoder(handle_unknown="ignore") encodes it as
-    # all-zeros, which the UI warns about rather than refusing outright.
     for col in cfg.CATEGORICAL_FEATURES:
         row[col] = str(row[col])
 
     return pd.DataFrame([row])[cfg.ALL_FEATURES]
 
 
-def unknown_categories(student_row: pd.DataFrame, metadata: dict) -> list[str]:
-    """List categorical values that never appeared in the training data.
+def unknown_categories(car_row: pd.DataFrame, metadata: dict) -> list[str]:
+    """Categorical values never seen in training (encoded as all-zeros / pooled).
 
-    Such a value is encoded as all-zeros, so the prediction still works but
-    leans entirely on the other features. Worth telling the user about.
+    An unseen brand is pooled with the rare brands; any other unseen level is
+    encoded as all-zeros. Either way the prediction runs but leans on the rest.
     """
-    known = metadata.get("encoded_feature_names", [])
-    unknown = []
+    known_brands = set(metadata.get("known_brands", []))
+    out = []
     for col in cfg.CATEGORICAL_FEATURES:
-        value = str(student_row.iloc[0][col])
-        expected = cfg.CATEGORICAL_LABELS.get(col, {})
-        # A binary column is encoded as a single "<col>_<level>" feature, so the
-        # label map is the reliable source of the levels seen during training.
-        if expected and value not in expected:
-            unknown.append(f"{cfg.FEATURE_LABELS.get(col, col)} = {value!r}")
-        elif not expected and f"{col}_{value}" not in known:
-            unknown.append(f"{cfg.FEATURE_LABELS.get(col, col)} = {value!r}")
-    return unknown
+        value = str(car_row.iloc[0][col])
+        label = cfg.FEATURE_LABELS.get(col, col)
+        if col == "brand":
+            if known_brands and value not in known_brands:
+                out.append(f"{label} = {value!r}")
+        elif value not in cfg.CATEGORICAL_LABELS.get(col, {}):
+            out.append(f"{label} = {value!r}")
+    return out
+
+
+def out_of_range_features(car_row: pd.DataFrame, metadata: dict) -> list[str]:
+    """Numeric inputs outside the range the models were trained on."""
+    out = []
+    for col, rng in metadata.get("feature_ranges", {}).items():
+        v = float(car_row.iloc[0][col])
+        if v < rng["min"] or v > rng["max"]:
+            out.append(
+                f"{cfg.FEATURE_LABELS.get(col, col)} = {v:g} "
+                f"(trained on {rng['min']:g} to {rng['max']:g})"
+            )
+    return out
 
 
 # --------------------------------------------------------------------------
 # Prediction
 # --------------------------------------------------------------------------
-def predict_risk_probability(pipeline, X: pd.DataFrame) -> float | None:
-    """P(at risk) from a classifier, or None if the model cannot express one.
-
-    Falls back to `decision_function` passed through a logistic squash when a
-    model exposes only a margin. The fallback is monotonic in the margin, so it
-    ranks students correctly, but it is not a calibrated probability -- the UI
-    labels it accordingly.
-    """
+def predict_premium_probability(pipeline, X: pd.DataFrame) -> float | None:
+    """P(premium) from a classifier, or None if the model cannot express one."""
     model = pipeline.named_steps.get("model", pipeline)
     if hasattr(model, "predict_proba"):
         return float(pipeline.predict_proba(X)[0, 1])
@@ -164,43 +164,32 @@ def predict_risk_probability(pipeline, X: pd.DataFrame) -> float | None:
     return None
 
 
-def predict_student(student: dict, models: dict, metadata: dict,
-                    classifier: str | None = None,
-                    threshold: float | None = None) -> dict:
-    """Score one student with the regression model and all three classifiers.
+def predict_car(car: dict, models: dict, metadata: dict,
+                classifier: str | None = None,
+                threshold: float | None = None) -> dict:
+    """Price one car with the regression model and classify it with all three.
 
-    Returns the predicted grade, the chosen classifier's verdict and
+    Returns the predicted price in rupees, the chosen classifier's verdict and
     probability, and every classifier's verdict so the UI can show where the
-    models agree and where they do not -- which is more honest than presenting
-    one model's answer as "the" answer.
+    models agree and where they do not.
     """
     classifier = classifier or metadata.get("best_classifier", "Random Forest")
     if classifier not in models:
-        raise InvalidStudentInputError(f"Unknown classifier {classifier!r}.")
-
-    # `threshold=None` means "use the model's own predict()", i.e. the 0.5
-    # default that every reported metric in the comparison tables is computed
-    # at. Passing an explicit threshold instead applies the cost-tuned cut-off
-    # chosen during training from out-of-fold predictions.
+        raise InvalidCarInputError(f"Unknown classifier {classifier!r}.")
     if threshold is not None and not (0.0 < float(threshold) < 1.0):
-        raise InvalidStudentInputError(
+        raise InvalidCarInputError(
             f"Decision threshold must be strictly between 0 and 1, got {threshold!r}."
         )
 
-    X = build_input_row(student, metadata.get("default_profile", {}))
+    X = build_input_row(car, metadata.get("default_profile", {}))
 
     try:
-        raw_score = float(models[cfg.REGRESSION_MODEL_NAME].predict(X)[0])
+        price = float(models[cfg.REGRESSION_MODEL_NAME].predict(X)[0])
     except Exception as exc:
-        raise InvalidStudentInputError(
-            f"The regression model could not score this student "
+        raise InvalidCarInputError(
+            f"The regression model could not price this car "
             f"({type(exc).__name__}: {exc})."
         ) from exc
-
-    # Linear regression is unbounded, so it can return a value outside 0-20.
-    # Both numbers are kept: the UI shows the clipped one and mentions the raw
-    # value when clipping changed it, rather than hiding the model's behaviour.
-    score = float(np.clip(raw_score, 0, cfg.GRADE_MAX))
 
     per_model = {}
     for name in cfg.CLASSIFICATION_MODEL_NAMES:
@@ -208,38 +197,30 @@ def predict_student(student: dict, models: dict, metadata: dict,
         if pipe is None:
             continue
         try:
-            proba = predict_risk_probability(pipe, X)
+            proba = predict_premium_probability(pipe, X)
             if threshold is None or proba is None:
                 label = int(pipe.predict(X)[0])
             else:
                 label = int(proba >= float(threshold))
         except Exception as exc:
-            raise InvalidStudentInputError(
-                f"{name} could not score this student "
-                f"({type(exc).__name__}: {exc})."
+            raise InvalidCarInputError(
+                f"{name} could not score this car ({type(exc).__name__}: {exc})."
             ) from exc
-        # SVC decides its label from the sign of the decision function, while
-        # its probability comes from a separate Platt-scaling fit. Near the
-        # boundary the two can disagree -- a student can be labelled "At Risk"
-        # with an estimated probability just under 50%. The label is kept as the
-        # model's real decision (it is what every reported metric is computed
-        # from) and the disagreement is flagged so the UI can explain it instead
-        # of looking like a bug.
-        proba_disagrees = (
-            proba is not None and bool(label) != bool(proba >= 0.5)
-        )
+        # SVC labels by the sign of its decision function but reports a separately
+        # Platt-scaled probability, so near the boundary they can disagree. The
+        # label is kept (every reported metric uses it) and the clash is flagged.
         per_model[name] = {
-            "at_risk": bool(label),
+            "premium": bool(label),
             "label": cfg.POSITIVE_CLASS_LABEL if label else cfg.NEGATIVE_CLASS_LABEL,
             "probability": proba,
-            "probability_disagrees_with_label": proba_disagrees,
+            "probability_disagrees_with_label": (
+                proba is not None and bool(label) != bool(proba >= 0.5)
+            ),
         }
 
     chosen = per_model[classifier]
-    votes = sum(1 for v in per_model.values() if v["at_risk"])
+    votes = sum(1 for v in per_model.values() if v["premium"])
 
-    # What the OTHER cut-off would have said, so the UI can show when the
-    # threshold -- rather than the model -- is what decided this student.
     alt_threshold = (
         cfg.DEFAULT_THRESHOLD if threshold is not None
         else (metadata.get("classification", {}).get(classifier, {})
@@ -251,42 +232,40 @@ def predict_student(student: dict, models: dict, metadata: dict,
 
     return {
         "input_row": X,
-        "predicted_score": score,
-        "predicted_score_raw": raw_score,
-        "score_was_clipped": abs(raw_score - score) > 1e-9,
+        "predicted_price": price,
+        "predicted_price_lakh": price / cfg.LAKH,
         "classifier": classifier,
-        "at_risk": chosen["at_risk"],
-        "risk_label": chosen["label"],
-        "risk_probability": chosen["probability"],
+        "premium": chosen["premium"],
+        "label": chosen["label"],
+        "premium_probability": chosen["probability"],
         "per_model": per_model,
         "models_agree": votes in (0, len(per_model)),
-        "at_risk_votes": votes,
+        "premium_votes": votes,
         "probability_disagrees_with_label": chosen["probability_disagrees_with_label"],
         "threshold_used": (float(threshold) if threshold is not None
                            else cfg.DEFAULT_THRESHOLD),
         "threshold_is_tuned": threshold is not None,
         "alt_threshold": (float(alt_threshold) if alt_threshold is not None else None),
-        "alt_at_risk": alt_label,
+        "alt_premium": alt_label,
         "threshold_decided_it": (
-            alt_label is not None and alt_label != chosen["at_risk"]
+            alt_label is not None and alt_label != chosen["premium"]
         ),
         "n_models": len(per_model),
         "unknown_categories": unknown_categories(X, metadata),
-        # The regression model's own view of the pass mark, which can disagree
+        "out_of_range": out_of_range_features(X, metadata),
+        # The regression model's own view of the 6-lakh line, which can disagree
         # with the classifiers. Surfacing the disagreement is the honest choice.
-        "regression_implies_at_risk": bool(score < cfg.AT_RISK_THRESHOLD),
+        "regression_implies_premium": bool(price >= cfg.PREMIUM_THRESHOLD),
     }
 
 
-def top_influential_features(metadata: dict, student_row: pd.DataFrame,
+def top_influential_features(metadata: dict, car_row: pd.DataFrame,
                              top_n: int = 6) -> list[dict]:
-    """The features the Random Forest relies on most, with this student's values.
+    """The inputs the Random Forest relies on most, with this car's values.
 
-    This is a GLOBAL view -- it describes which inputs the model leans on across
-    all students, not a per-student attribution, and the UI says so. Permutation
-    importance is used rather than impurity importance because it is measured on
-    held-out data and is not inflated by a feature simply having many distinct
-    values.
+    A GLOBAL view (which inputs matter across all cars), not a per-car
+    attribution. Permutation importance is used because it is measured on
+    held-out data.
     """
     perm = metadata.get("rf_permutation_importance") or []
     if not perm:
@@ -298,19 +277,17 @@ def top_influential_features(metadata: dict, student_row: pd.DataFrame,
     out = []
     for rec in perm[:top_n]:
         feature = rec["feature"]
-        if feature not in student_row.columns:
+        if feature not in car_row.columns:
             continue
-        value = student_row.iloc[0][feature]
+        value = car_row.iloc[0][feature]
         if isinstance(value, (int, float, np.integer, np.floating)):
-            numeric = float(value)
-            fallback = f"{numeric:g}"
-            readable = cfg.ORDINAL_SCALES.get(feature, {}).get(int(numeric), fallback)
+            readable = f"{float(value):g}"
         else:
             readable = cfg.CATEGORICAL_LABELS.get(feature, {}).get(value, str(value))
         out.append({
             "feature": feature,
             "label": cfg.FEATURE_LABELS.get(feature, feature),
             "importance": float(rec.get("permutation_importance", 0.0)),
-            "student_value": readable,
+            "car_value": readable,
         })
     return out

@@ -6,81 +6,62 @@ measuring what they say they measure. These are the most important tests here.
 
 import pytest
 
+FORBIDDEN = {"selling_price", "is_premium", "name", "year"}
 
-FORBIDDEN = {"G1", "G2", "G3", "at_risk"}
 
-
-def test_grade_columns_are_not_in_the_configured_feature_list(cfg):
-    """The feature lists in config.py must not name any grade column."""
+def test_forbidden_columns_are_not_in_the_configured_feature_list(cfg):
     overlap = FORBIDDEN.intersection(cfg.ALL_FEATURES)
-    assert not overlap, f"grade columns configured as model inputs: {overlap}"
+    assert not overlap, f"configured as model inputs: {overlap}"
 
 
-def test_classification_feature_matrix_has_no_grade_columns(dp, df):
-    X, _ = dp.split_features_target(df, task="classification")
+@pytest.mark.parametrize("task", ["classification", "regression"])
+def test_feature_matrix_has_no_target_derived_columns(dp, df, task):
+    X, _ = dp.split_features_target(df, task=task)
     overlap = FORBIDDEN.intersection(X.columns)
     assert not overlap, f"leaked into X: {overlap}"
 
 
-def test_regression_feature_matrix_has_no_grade_columns(dp, df):
-    """G3 is the regression target, so it must not also be an input."""
-    X, y = dp.split_features_target(df, task="regression")
-    overlap = FORBIDDEN.intersection(X.columns)
-    assert not overlap, f"leaked into X: {overlap}"
-    assert y.name == "G3"
+def test_targets_are_the_documented_columns(dp, df, cfg):
+    _, y_reg = dp.split_features_target(df, task="regression")
+    _, y_clf = dp.split_features_target(df, task="classification")
+    assert y_reg.name == "selling_price"
+    assert y_clf.name == "is_premium"
 
 
-def test_leakage_guard_actually_raises(dp, df, monkeypatch, cfg):
-    """The assertion must FIRE, not merely exist.
-
-    A guard that never triggers is not a guard. This adds `G2` to the
-    configured numeric features and asserts the build then fails, which is the
-    only way to know the check is live.
-    """
-    monkeypatch.setattr(cfg, "NUMERIC_FEATURES",
-                        list(cfg.NUMERIC_FEATURES) + ["G2"])
+@pytest.mark.parametrize("bad", ["selling_price", "name", "year"])
+def test_leakage_guard_actually_raises(dp, df, monkeypatch, cfg, bad):
+    """The assertion must FIRE, not merely exist."""
+    monkeypatch.setattr(cfg, "NUMERIC_FEATURES", list(cfg.NUMERIC_FEATURES) + [bad])
     with pytest.raises(AssertionError, match="Leakage guard"):
         dp.split_features_target(df, task="classification")
 
 
-def test_leaky_variant_is_opt_in_only(dp, df):
-    """`leaky=True` is the documented escape hatch for the demonstration.
-
-    It must include the grades when asked (otherwise the leakage comparison in
-    the README is not measuring leakage) and exclude them by default.
-    """
-    clean, _ = dp.split_features_target(df, task="regression", leaky=False)
-    leaky, _ = dp.split_features_target(df, task="regression", leaky=True)
-    assert "G1" not in clean.columns and "G2" not in clean.columns
-    assert "G1" in leaky.columns and "G2" in leaky.columns
-    assert "G3" not in leaky.columns, "the target must never be an input"
-
-
-def test_target_is_derived_from_g3_at_the_documented_threshold(dp, df, cfg):
-    expected = (df["G3"] < cfg.AT_RISK_THRESHOLD).astype(int)
+def test_premium_label_is_derived_from_price_at_the_documented_threshold(df, cfg):
+    expected = (df["selling_price"] >= cfg.PREMIUM_THRESHOLD).astype(int)
     assert (df[cfg.CLASSIFICATION_TARGET] == expected).all()
-    assert cfg.AT_RISK_THRESHOLD == 10, "README documents a pass mark of 10"
+    assert cfg.PREMIUM_THRESHOLD == 600_000, "README documents a 6 lakh cut-off"
 
 
 def test_preprocessor_is_fitted_on_training_rows_only(dp, df, cfg):
-    """Scaling statistics must come from the training split, not the full data.
-
-    Fitting a scaler before splitting is the most common silent leak in a
-    student ML project. This checks the pipeline's scaler mean matches the
-    TRAIN mean and not the whole-dataset mean.
-    """
+    """Scaling statistics must come from the training split, not the full data."""
     import numpy as np
     from sklearn.model_selection import train_test_split
 
     X, y = dp.split_features_target(df, task="classification")
-    X_train, _, y_train, _ = train_test_split(
+    X_train, _, _, _ = train_test_split(
         X, y, test_size=cfg.TEST_SIZE, random_state=cfg.RANDOM_STATE, stratify=y
     )
     pre = dp.build_preprocessor().fit(X_train)
-    scaler = pre.named_transformers_["num"].named_steps["scaler"]
-
-    idx = cfg.NUMERIC_FEATURES.index("absences")
-    assert np.isclose(scaler.mean_[idx], X_train["absences"].mean())
-    assert not np.isclose(scaler.mean_[idx], X["absences"].mean()), (
-        "scaler mean equals the FULL dataset mean — preprocessing leaked"
+    num = pre.named_transformers_["num"]
+    idx = cfg.NUMERIC_FEATURES.index("km_driven")
+    # The imputer fills with the training median, the scaler centres on the
+    # training mean of the imputed column.
+    train_imputed = num.named_steps["imputer"].transform(X_train[cfg.NUMERIC_FEATURES])
+    assert np.isclose(num.named_steps["scaler"].mean_[idx], train_imputed[:, idx].mean())
+    assert not np.isclose(num.named_steps["scaler"].mean_[idx], X["km_driven"].mean()), (
+        "scaler mean equals the FULL dataset mean -- preprocessing leaked"
     )
+
+
+def test_duplicates_are_removed_before_any_split(df):
+    assert int(df.duplicated().sum()) == 0

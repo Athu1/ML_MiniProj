@@ -1,11 +1,10 @@
 """
-Central configuration for the Student Academic Performance & At-Risk
-Prediction System.
+Central configuration for the Used Car Price & Premium Prediction System.
 
-Everything that another module might want to agree on -- paths, the random
-seed, the at-risk threshold, and (most importantly) which columns are allowed
-to be used as model inputs -- lives here, so there is exactly one place to
-look when answering "what did this project actually train on?".
+Everything another module might want to agree on -- paths, the random seed, the
+"premium" price threshold, and (most importantly) which columns are allowed to
+be used as model inputs -- lives here, so there is exactly one place to look
+when answering "what did this project actually train on?".
 """
 
 from pathlib import Path
@@ -21,17 +20,18 @@ MODELS_DIR = PROJECT_ROOT / "models"
 RESULTS_DIR = PROJECT_ROOT / "results"
 FIGURES_DIR = RESULTS_DIR / "figures"
 
-# The two files published with the UCI Student Performance dataset.
-# "mat" (Mathematics, 395 students) is the project default -- see README for why.
-DATASET_FILES = {
-    "mat": DATA_RAW_DIR / "student-mat.csv",
-    "por": DATA_RAW_DIR / "student-por.csv",
-}
-DEFAULT_DATASET = "mat"
+DATASET_FILE = DATA_RAW_DIR / "cardekho.csv"
 
-# Row/column counts documented by UCI. Used as an integrity check at load time
-# so a corrupted or silently-substituted file is caught instead of trained on.
-EXPECTED_SHAPES = {"mat": (395, 33), "por": (649, 33)}
+# Integrity checks applied when the file is loaded. The file is a copy of the
+# widely circulated CarDekho used-car listings, not a UCI-style published
+# dataset with an official specification, so there is no authority to quote.
+# The shape and checksum below are what THIS project was developed and tested
+# on; if either differs the loader refuses to proceed rather than silently
+# training on a different file.
+EXPECTED_RAW_SHAPE = (8128, 12)
+EXPECTED_SHA256 = (
+    "13680430728ec823242429b5a6826e7e42e38fd379e90d972841d84869e19603"
+)
 
 # --------------------------------------------------------------------------
 # Reproducibility
@@ -43,202 +43,127 @@ CV_FOLDS = 5
 # --------------------------------------------------------------------------
 # Targets
 # --------------------------------------------------------------------------
-REGRESSION_TARGET = "G3"          # final grade, 0-20 scale
-CLASSIFICATION_TARGET = "at_risk"  # derived: 1 if G3 < AT_RISK_THRESHOLD
-AT_RISK_THRESHOLD = 10             # Portuguese pass mark on a 0-20 scale
-GRADE_MAX = 20
+REGRESSION_TARGET = "selling_price"     # asking price in Indian rupees
+CLASSIFICATION_TARGET = "is_premium"    # derived: 1 if price >= PREMIUM_THRESHOLD
 
-# Class 1 = "At Risk" is the positive class for precision/recall/F1/ROC-AUC.
-POSITIVE_CLASS_LABEL = "At Risk"
-NEGATIVE_CLASS_LABEL = "Not At Risk"
+# A "premium" car is one listed at 6 lakh rupees or more (1 lakh = 100,000).
+# 6 lakh is a round figure chosen BEFORE any model was fitted, because it leaves
+# a learnable minority class (about 30% of listings, close to the 33% minority
+# in a typical early-warning problem). It was not tuned to improve a metric, and
+# it is a modelling convention rather than an industry definition: a different
+# threshold would define a different task. The classification label is derived
+# from the regression target, exactly as a pass/fail label would be derived from
+# a grade, so neither the price nor the label may ever be an input.
+PREMIUM_THRESHOLD = 600_000
+LAKH = 100_000
+
+POSITIVE_CLASS_LABEL = "Premium"
+NEGATIVE_CLASS_LABEL = "Standard"
+
+# The newest model year in the data. Age = REFERENCE_YEAR - year. A fixed
+# constant (not today's date) so results do not change from year to year.
+REFERENCE_YEAR = 2020
 
 # --------------------------------------------------------------------------
 # Decision threshold
 # --------------------------------------------------------------------------
-# The probability above which a student is labelled At Risk. 0.5 is the
-# scikit-learn default and is what `predict()` uses, but it is an arbitrary
-# choice, not a derived one: on this dataset a third of the test students sit
-# within 0.1 of it, so for those students the verdict is decided by this
-# constant rather than by the model.
+# The probability above which a car is labelled Premium. 0.5 is the
+# scikit-learn default and what `predict()` uses; it is a convention, not a
+# result.
 DEFAULT_THRESHOLD = 0.5
 
-# How many false alarms one missed at-risk student is considered worth.
+# How many false alarms one missed premium car is considered worth.
 #
-# This is a POLICY judgement, not a statistical one, and it belongs in the
-# open. The reasoning: the cost of a false alarm is a tutor spending a
-# conversation on a student who was going to pass anyway; the cost of a false
-# negative is a struggling student receiving no help at all. Those are not
-# equal, so a threshold chosen to maximise accuracy (or even F1, which weights
-# precision and recall equally) encodes the wrong preference.
-#
-# 3 is deliberately modest -- it says "we would accept three unnecessary
-# conversations to catch one more at-risk student". A school with more tutoring
-# capacity would raise it; one with less would lower it. The training script
-# reports a sweep over several ratios so the sensitivity to this number is
-# visible rather than hidden.
-FN_COST_RATIO = 3.0
-THRESHOLD_SWEEP_RATIOS = [1.0, 2.0, 3.0, 5.0, 10.0]
+# Unlike a medical or early-warning problem there is NO stated reason here to
+# treat the two errors differently: wrongly calling a standard car premium and
+# wrongly calling a premium car standard are about equally unhelpful. So the
+# default is 1.0 (minimise total errors) and nothing about the domain justifies
+# a higher number. The training script still reports a sweep over other ratios
+# so the sensitivity of the chosen cut-off to this assumption is visible.
+FN_COST_RATIO = 1.0
+THRESHOLD_SWEEP_RATIOS = [0.5, 1.0, 2.0, 3.0, 5.0]
 
-# Bins for the calibration curve. Kept small because the test set is only 79
-# students: 10 bins would leave several bins with one or two students and a
-# meaninglessly spiky curve.
-CALIBRATION_BINS = 5
+# Bins for the calibration curve. Kept small because the test set is only about
+# 1,400 cars and equal-count bins must each hold enough of them to be meaningful.
+CALIBRATION_BINS = 8
 
 # --------------------------------------------------------------------------
 # Feature selection
 # --------------------------------------------------------------------------
 # Columns deliberately kept OUT of the model inputs. Each entry is
-# (column, reason) and the reason is surfaced in the README and in the UI, so
-# the exclusion decisions are auditable rather than buried in code.
+# (column, reason); the reasons are surfaced in the README and the UI, so the
+# exclusion decisions are auditable rather than buried in code.
 EXCLUDED_COLUMNS = [
-    ("G3", "This IS the regression target and the source of the at-risk label. "
-           "Using it as an input would be direct target leakage."),
-    ("at_risk", "This IS the classification target, derived from G3."),
-    ("G2", "Second-period grade. Correlates r=0.90 with G3 on the Mathematics "
-           "file. It is an intermediate assessment of the very outcome we are "
-           "predicting, so including it both leaks the target and destroys the "
-           "early-warning use case (a grade this late leaves no time to act)."),
-    ("G1", "First-period grade. Correlates r=0.80 with G3. Excluded for the "
-           "same reason as G2."),
+    ("selling_price", "This IS the regression target and the source of the "
+                      "premium label. Using it as an input would be direct "
+                      "target leakage."),
+    ("is_premium", "This IS the classification target, derived from the price."),
+    ("name", "Free text such as 'Maruti Swift Dzire VDI'. Almost every value is "
+             "near-unique, so a model could memorise individual listings. Only "
+             "its first word, the brand, is kept as a categorical feature."),
+    ("year", "Replaced by `age` = 2020 - year. They carry identical "
+             "information, and keeping both would add a perfectly collinear "
+             "column that makes Linear Regression coefficients unstable."),
 ]
 
-# Ordinal/count variables treated as numeric. The Likert-style 1-5 and 0-4
-# columns are ordered scales, so treating them as numeric (rather than
-# one-hot encoding each level) keeps the model small and the coefficients
-# interpretable. This choice is documented in the README.
 NUMERIC_FEATURES = [
-    "age",         # 15-22
-    "Medu",        # mother's education, 0-4 (ordinal)
-    "Fedu",        # father's education, 0-4 (ordinal)
-    "traveltime",  # home->school travel time, 1-4 (ordinal)
-    "studytime",   # weekly study time, 1-4 (ordinal)
-    "failures",    # number of past class failures, 0-4
-    "famrel",      # quality of family relationships, 1-5 (ordinal)
-    "freetime",    # free time after school, 1-5 (ordinal)
-    "goout",       # going out with friends, 1-5 (ordinal)
-    "Dalc",        # workday alcohol consumption, 1-5 (ordinal)
-    "Walc",        # weekend alcohol consumption, 1-5 (ordinal)
-    "health",      # current health status, 1-5 (ordinal)
-    "absences",    # school absences, 0-93
+    "age",         # years since manufacture, derived from `year`
+    "km_driven",   # odometer reading, km
+    "mileage",     # fuel economy, km/l (km/kg for CNG and LPG)
+    "engine",      # engine displacement, cc
+    "max_power",   # maximum power, bhp
+    "seats",       # number of seats
 ]
 
 CATEGORICAL_FEATURES = [
-    "school",      # GP / MS
-    "sex",         # F / M
-    "address",     # U (urban) / R (rural)
-    "famsize",     # LE3 / GT3
-    "Pstatus",     # T (together) / A (apart)
-    "Mjob",        # 5 levels
-    "Fjob",        # 5 levels
-    "reason",      # 4 levels
-    "guardian",    # 3 levels
-    "schoolsup",   # extra educational support, yes/no
-    "famsup",      # family educational support, yes/no
-    "paid",        # extra paid classes, yes/no
-    "activities",  # extra-curricular activities, yes/no
-    "nursery",     # attended nursery school, yes/no
-    "higher",      # wants higher education, yes/no
-    "internet",    # internet access at home, yes/no
-    "romantic",    # in a romantic relationship, yes/no
+    "brand",         # first word of `name`; 32 brands, many very rare
+    "fuel",          # Diesel / Petrol / CNG / LPG
+    "seller_type",   # Individual / Dealer / Trustmark Dealer
+    "transmission",  # Manual / Automatic
+    "owner",         # First / Second / Third / Fourth & Above / Test Drive Car
 ]
 
 ALL_FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
 
-# The "leaky" variant used ONLY for the side-by-side leakage demonstration in
-# section 6 of the app. It is never used for the models the app predicts with.
-LEAKY_EXTRA_NUMERIC = ["G1", "G2"]
+# A brand with fewer than this many cars in the TRAINING split is pooled into a
+# single "infrequent" column by the encoder, and so is any brand never seen in
+# training. This keeps 32 mostly tiny brand columns from overfitting, and means
+# a brand typed into the web form that the model has never seen degrades
+# gracefully instead of failing.
+MIN_BRAND_FREQUENCY = 30
+
+# Raw column names that need renaming on load.
+RAW_RENAMES = {"mileage(km/ltr/kg)": "mileage"}
 
 # --------------------------------------------------------------------------
-# Human-readable labels and help text for the prediction form
+# Labels and help text for the prediction form
 # --------------------------------------------------------------------------
-# Only features a user could plausibly know about a real student are exposed in
-# the UI form. The rest are filled from dataset medians/modes (see
-# src/prediction.py), which is stated in the UI.
-FORM_FEATURES = [
-    "age", "sex", "studytime", "failures", "absences", "Medu", "Fedu",
-    "famsize", "Pstatus", "guardian", "traveltime", "schoolsup", "famsup",
-    "paid", "activities", "higher", "internet", "romantic", "famrel",
-    "freetime", "goout", "Dalc", "Walc", "health",
-]
-
 FEATURE_LABELS = {
     "age": "Age (years)",
-    "Medu": "Mother's education level",
-    "Fedu": "Father's education level",
-    "traveltime": "Home-to-school travel time",
-    "studytime": "Weekly study time",
-    "failures": "Number of past class failures",
-    "famrel": "Quality of family relationships",
-    "freetime": "Free time after school",
-    "goout": "Going out with friends",
-    "Dalc": "Workday alcohol consumption",
-    "Walc": "Weekend alcohol consumption",
-    "health": "Current health status",
-    "absences": "School absences (days)",
-    "school": "School",
-    "sex": "Sex",
-    "address": "Home address type",
-    "famsize": "Family size",
-    "Pstatus": "Parents' cohabitation status",
-    "Mjob": "Mother's job",
-    "Fjob": "Father's job",
-    "reason": "Reason for choosing this school",
-    "guardian": "Guardian",
-    "schoolsup": "Extra educational support (school)",
-    "famsup": "Family educational support",
-    "paid": "Extra paid classes",
-    "activities": "Extra-curricular activities",
-    "nursery": "Attended nursery school",
-    "higher": "Wants to take higher education",
-    "internet": "Internet access at home",
-    "romantic": "In a romantic relationship",
-    "G1": "First period grade",
-    "G2": "Second period grade",
-    "G3": "Final grade (target)",
-}
-
-# Ordinal scales: {feature: {raw_value: readable_label}}
-ORDINAL_SCALES = {
-    "Medu": {0: "0 - none", 1: "1 - primary (4th grade)", 2: "2 - 5th to 9th grade",
-             3: "3 - secondary", 4: "4 - higher education"},
-    "Fedu": {0: "0 - none", 1: "1 - primary (4th grade)", 2: "2 - 5th to 9th grade",
-             3: "3 - secondary", 4: "4 - higher education"},
-    "traveltime": {1: "1 - under 15 min", 2: "2 - 15 to 30 min",
-                   3: "3 - 30 min to 1 hour", 4: "4 - over 1 hour"},
-    "studytime": {1: "1 - under 2 hours", 2: "2 - 2 to 5 hours",
-                  3: "3 - 5 to 10 hours", 4: "4 - over 10 hours"},
-    "famrel": {1: "1 - very bad", 2: "2 - bad", 3: "3 - average",
-               4: "4 - good", 5: "5 - excellent"},
-    "freetime": {1: "1 - very low", 2: "2 - low", 3: "3 - medium",
-                 4: "4 - high", 5: "5 - very high"},
-    "goout": {1: "1 - very low", 2: "2 - low", 3: "3 - medium",
-              4: "4 - high", 5: "5 - very high"},
-    "Dalc": {1: "1 - very low", 2: "2 - low", 3: "3 - medium",
-             4: "4 - high", 5: "5 - very high"},
-    "Walc": {1: "1 - very low", 2: "2 - low", 3: "3 - medium",
-             4: "4 - high", 5: "5 - very high"},
-    "health": {1: "1 - very bad", 2: "2 - bad", 3: "3 - average",
-               4: "4 - good", 5: "5 - very good"},
+    "km_driven": "Distance driven (km)",
+    "mileage": "Fuel economy (km/l)",
+    "engine": "Engine size (cc)",
+    "max_power": "Maximum power (bhp)",
+    "seats": "Number of seats",
+    "brand": "Brand",
+    "fuel": "Fuel type",
+    "seller_type": "Seller type",
+    "transmission": "Transmission",
+    "owner": "Owner history",
+    "year": "Year of manufacture",
+    "selling_price": "Selling price (target)",
 }
 
 CATEGORICAL_LABELS = {
-    "school": {"GP": "Gabriel Pereira", "MS": "Mousinho da Silveira"},
-    "sex": {"F": "Female", "M": "Male"},
-    "address": {"U": "Urban", "R": "Rural"},
-    "famsize": {"LE3": "3 or fewer members", "GT3": "More than 3 members"},
-    "Pstatus": {"T": "Living together", "A": "Living apart"},
-    "guardian": {"mother": "Mother", "father": "Father", "other": "Other"},
-    "Mjob": {"at_home": "At home", "health": "Health care", "other": "Other",
-             "services": "Civil services", "teacher": "Teacher"},
-    "Fjob": {"at_home": "At home", "health": "Health care", "other": "Other",
-             "services": "Civil services", "teacher": "Teacher"},
-    "reason": {"home": "Close to home", "reputation": "School reputation",
-               "course": "Course preference", "other": "Other"},
+    "fuel": {"Diesel": "Diesel", "Petrol": "Petrol", "CNG": "CNG", "LPG": "LPG"},
+    "seller_type": {"Individual": "Individual", "Dealer": "Dealer",
+                    "Trustmark Dealer": "Trustmark Dealer"},
+    "transmission": {"Manual": "Manual", "Automatic": "Automatic"},
+    "owner": {"First Owner": "First owner", "Second Owner": "Second owner",
+              "Third Owner": "Third owner",
+              "Fourth & Above Owner": "Fourth owner or more",
+              "Test Drive Car": "Test drive car"},
 }
-# yes/no columns share one label map
-for _c in ["schoolsup", "famsup", "paid", "activities", "nursery", "higher",
-           "internet", "romantic"]:
-    CATEGORICAL_LABELS[_c] = {"yes": "Yes", "no": "No"}
 
 # --------------------------------------------------------------------------
 # Model registry
@@ -256,7 +181,7 @@ METADATA_FILE = MODELS_DIR / "metadata.pkl"
 
 RESULTS_CLASSIFICATION_CSV = RESULTS_DIR / "classification_results.csv"
 RESULTS_REGRESSION_CSV = RESULTS_DIR / "regression_results.csv"
-RESULTS_LEAKAGE_CSV = RESULTS_DIR / "leakage_comparison.csv"
+RESULTS_LEAKAGE_CSV = RESULTS_DIR / "duplicate_leakage.csv"
 RESULTS_FEATURE_IMPORTANCE_CSV = RESULTS_DIR / "feature_importance.csv"
 RESULTS_MODEL_RESULTS_CSV = RESULTS_DIR / "model_results.csv"
 RESULTS_THRESHOLD_CSV = RESULTS_DIR / "threshold_tuning.csv"

@@ -25,10 +25,7 @@ Thumbs.db
 *.swp
 
 # NOTE on what is deliberately NOT ignored:
-#   data/raw/        the two UCI CSV files are committed, so the project is
-#                    reproducible without a download (they are ~150 KB total)
+#   data/raw/        cardekho.csv (~0.5 MB) is committed so the project is
+#                    reproducible without a download
 #   models/*.pkl     committed so `streamlit run app.py` works immediately
 #                    after cloning, without first running the training script
-#   results/         committed because the README and report quote these exact
-#                    numbers; keeping them in version control is what makes the
-#                    claim "these are the real figures" checkable

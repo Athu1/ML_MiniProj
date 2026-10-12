@@ -7,9 +7,10 @@ values that came out of a trained model or out of the dataset itself.
 
 Colour rules followed throughout
 --------------------------------
-* "At Risk" / "Not At Risk" are *states*, so they use a reserved status pair
-  (green / red) and always carry a text label as well -- colour never carries
-  the meaning on its own.
+* "Premium" / "Standard" are two classes, not good/bad, so they use blue and
+  violet (never the red/green status pair) and always carry a text label --
+  colour never carries the meaning on its own. Red marks only reference lines
+  such as the premium price line.
 * Magnitude charts (histogram, confusion matrix, feature importance) use a
   single blue hue, light to dark. One series gets one colour; bars are never
   shaded darker-where-bigger, because that would encode bar length twice and
@@ -52,7 +53,7 @@ MODEL_COLORS = {
 SERIES_BLUE = "#2a78d6"
 SERIES_VIOLET = "#4a3aa7"
 
-# Reserved status colours -- used only for the at-risk state, never as a series.
+# Reserved status colours -- used only for the premium state, never as a series.
 STATUS_GOOD = "#0ca30c"
 STATUS_CRITICAL = "#d03b3b"
 STATUS_WARNING = "#fab219"
@@ -107,48 +108,45 @@ def _no_grid_axis(title: str = "", **kwargs) -> dict:
 # ==========================================================================
 # SECTION: dataset analysis
 # ==========================================================================
-def score_distribution(df: pd.DataFrame) -> go.Figure:
-    """Histogram of final grades, with the at-risk threshold marked.
+def price_distribution(df: pd.DataFrame) -> go.Figure:
+    """Histogram of selling prices (lakh rupees) with the premium line marked.
 
-    One series, so one colour and no legend. The annotation at grade 0 is the
-    point of the chart: that bar is not a smooth tail, it is a separate group of
-    students who recorded no final grade at all.
+    Prices are right-skewed (skew 5.6), so the x-axis is capped at the 99th
+    percentile for readability and the annotation says how many dearer cars the
+    cap hides. One series, so one colour and no legend.
     """
-    grades = df[cfg.REGRESSION_TARGET]
-    counts = grades.value_counts().reindex(range(0, 21), fill_value=0)
-    zero_n = int(counts.loc[0])
+    lakh = df[cfg.REGRESSION_TARGET] / cfg.LAKH
+    cap = float(lakh.quantile(0.99))
+    shown = lakh[lakh <= cap]
+    hidden = int((lakh > cap).sum())
 
     fig = go.Figure(
-        go.Bar(
-            x=list(counts.index), y=counts.values,
+        go.Histogram(
+            x=shown, xbins=dict(start=0, end=cap, size=1),
             marker=dict(color=SERIES_BLUE, line=dict(width=2, color=SURFACE)),
-            hovertemplate="Grade %{x}/20<br>%{y} students<extra></extra>",
+            hovertemplate="%{x} lakh<br>%{y} cars<extra></extra>",
         )
     )
     fig.add_vline(
-        x=cfg.AT_RISK_THRESHOLD - 0.5, line=dict(color=STATUS_CRITICAL, width=2, dash="dash"),
-        annotation_text=f"At-risk threshold (below {cfg.AT_RISK_THRESHOLD})",
+        x=cfg.PREMIUM_THRESHOLD / cfg.LAKH,
+        line=dict(color=STATUS_CRITICAL, width=2, dash="dash"),
+        annotation_text=f"Premium line ({cfg.PREMIUM_THRESHOLD / cfg.LAKH:g} lakh)",
         annotation_position="top right",
         annotation_font=dict(size=11, color=STATUS_CRITICAL),
     )
-    if zero_n:
-        fig.add_annotation(
-            x=0, y=zero_n, text=f"{zero_n} students<br>recorded 0",
-            showarrow=True, arrowhead=0, arrowcolor=INK_MUTED, ax=38, ay=-32,
-            font=dict(size=11, color=INK_SECONDARY), align="left",
-        )
-    fig.update_layout(**_base_layout("Distribution of final grades (G3)"))
-    fig.update_xaxes(**_axis("Final grade (0-20)", dtick=2, showgrid=False))
-    fig.update_yaxes(**_axis("Number of students"))
+    fig.update_layout(**_base_layout(
+        f"Distribution of selling prices ({hidden} cars above {cap:.0f} lakh not shown)"
+    ))
+    fig.update_xaxes(**_axis("Selling price (lakh rupees)", showgrid=False))
+    fig.update_yaxes(**_axis("Number of cars"))
     return fig
 
 
 def class_distribution(df: pd.DataFrame) -> go.Figure:
-    """At-risk vs not-at-risk counts.
+    """Standard vs premium counts, labelled directly on the bars.
 
-    These are two states rather than two series, so they use the reserved
-    status colours and are labelled directly on the bars -- the reader never has
-    to decode a colour.
+    These are two classes rather than a good/bad pair, so a neutral blue and a
+    violet are used instead of the reserved status colours.
     """
     counts = df[cfg.CLASSIFICATION_TARGET].value_counts().sort_index()
     n = int(counts.sum())
@@ -158,155 +156,120 @@ def class_distribution(df: pd.DataFrame) -> go.Figure:
     fig = go.Figure(
         go.Bar(
             x=labels, y=values,
-            marker=dict(color=[STATUS_GOOD, STATUS_CRITICAL],
+            marker=dict(color=[SERIES_BLUE, SERIES_VIOLET],
                         line=dict(width=2, color=SURFACE)),
             text=[f"{v}  ({v / n * 100:.1f}%)" for v in values],
             textposition="outside",
             textfont=dict(size=12, color=INK_SECONDARY),
-            hovertemplate="%{x}<br>%{y} students<extra></extra>",
+            hovertemplate="%{x}<br>%{y} cars<extra></extra>",
             width=0.5,
         )
     )
     fig.update_layout(**_base_layout(
-        f"Class balance: {values[1]} of {n} students are at risk", height=360
+        f"Class balance: {values[1]} of {n} cars are premium", height=360
     ))
     fig.update_xaxes(**_no_grid_axis(""))
-    fig.update_yaxes(**_axis("Number of students", range=[0, max(values) * 1.18]))
+    fig.update_yaxes(**_axis("Number of cars", range=[0, max(values) * 1.18]))
     return fig
 
 
-def feature_vs_score_box(df: pd.DataFrame, feature: str) -> go.Figure:
-    """Box plot of final grade across the levels of one ordinal/categorical feature.
+def feature_vs_price_box(df: pd.DataFrame, feature: str) -> go.Figure:
+    """Box plot of selling price (log axis) across the levels of one category.
 
-    A box plot rather than a scatter plot: features such as `studytime` and
-    `failures` take only three to five distinct values, so a scatter would draw
-    a few vertical stripes of heavily overlapping points. The box shows the
-    median and spread per level, which is the comparison that matters.
+    A log axis, because prices span 30,000 to 10 million rupees and a linear axis
+    would squash every box except the luxury ones against the floor.
     """
     label = cfg.FEATURE_LABELS.get(feature, feature)
-    scale = cfg.ORDINAL_SCALES.get(feature, {})
-    cat_labels = cfg.CATEGORICAL_LABELS.get(feature, {})
+    order = df[feature].value_counts()
+    levels = order[order >= 10].index.tolist()   # skip levels too rare to draw
 
-    levels = sorted(df[feature].unique())
     fig = go.Figure()
     for lvl in levels:
-        sub = df.loc[df[feature] == lvl, cfg.REGRESSION_TARGET]
-        tick = scale.get(lvl, cat_labels.get(lvl, str(lvl)))
+        sub = df.loc[df[feature] == lvl, cfg.REGRESSION_TARGET] / cfg.LAKH
         fig.add_trace(
             go.Box(
-                y=sub, name=str(tick), boxmean=True,
-                marker=dict(color=SERIES_BLUE, size=5,
+                y=sub, name=f"{lvl} (n={len(sub)})", boxmean=True,
+                marker=dict(color=SERIES_BLUE, size=4,
                             line=dict(width=1, color=SURFACE)),
                 line=dict(color=SERIES_BLUE, width=2),
                 fillcolor="rgba(42,120,214,0.14)",
-                hovertemplate=(f"{label}: {tick}<br>"
-                               "Final grade: %{y}/20<extra></extra>"),
+                hovertemplate=f"{label}: {lvl}<br>%{{y:.2f}} lakh<extra></extra>",
             )
         )
     fig.add_hline(
-        y=cfg.AT_RISK_THRESHOLD, line=dict(color=STATUS_CRITICAL, width=2, dash="dash"),
-        annotation_text="Pass mark", annotation_position="bottom right",
+        y=cfg.PREMIUM_THRESHOLD / cfg.LAKH,
+        line=dict(color=STATUS_CRITICAL, width=2, dash="dash"),
+        annotation_text="Premium line", annotation_position="bottom right",
         annotation_font=dict(size=11, color=STATUS_CRITICAL),
     )
-    fig.update_layout(**_base_layout(f"Final grade by {label.lower()}", height=400))
+    fig.update_layout(**_base_layout(f"Selling price by {label.lower()}", height=420))
     fig.update_xaxes(**_no_grid_axis(label))
-    fig.update_yaxes(**_axis("Final grade (0-20)", range=[-1, 21]))
+    fig.update_yaxes(**_axis("Selling price (lakh rupees, log scale)", type="log"))
     return fig
 
 
-def absences_vs_score(df: pd.DataFrame) -> go.Figure:
-    """Scatter of absences against final grade, with the fitted trend line.
+def numeric_vs_price(df: pd.DataFrame, feature: str) -> go.Figure:
+    """Scatter of one numeric feature against selling price (log axis).
 
-    `absences` is a genuine count with a long tail (0 to 75), so a scatter is
-    the right form here.
-
-    The chart exists to show why the aggregate correlation (r = +0.03) must not
-    be quoted on its own. Every student who recorded a final grade of 0 also
-    recorded 0 absences -- they sit as a block in the bottom-left corner -- and
-    that block drags the overall fit flat. Among students with a genuine
-    recorded grade the correlation is r = -0.21, a sign reversal. Both are shown.
+    Premium cars are drawn in violet so the class boundary is visible on the
+    chart. The correlation quoted is Pearson r against LOG price, because the
+    raw price is so skewed that a handful of luxury cars would dominate r.
     """
-    x = df["absences"].to_numpy(dtype=float)
-    y = df[cfg.REGRESSION_TARGET].to_numpy(dtype=float)
-    r = float(np.corrcoef(x, y)[0, 1])
-
-    # The headline correlation is suppressed by the zero-grade group: every one
-    # of those students records zero absences, which pulls the fit flat. The
-    # correlation among students with a recorded grade is computed and shown
-    # too, because quoting the aggregate alone would be misleading.
-    graded = df[cfg.REGRESSION_TARGET] > 0
-    r_graded = float(df.loc[graded, "absences"].corr(df.loc[graded, cfg.REGRESSION_TARGET]))
-    n_zero = int((~graded).sum())
-
-    slope, intercept = np.polyfit(x, y, 1)
-    xs = np.array([x.min(), x.max()])
+    label = cfg.FEATURE_LABELS.get(feature, feature)
+    sub = df[[feature, cfg.REGRESSION_TARGET, cfg.CLASSIFICATION_TARGET]].dropna()
+    lakh = sub[cfg.REGRESSION_TARGET] / cfg.LAKH
+    r = float(np.corrcoef(sub[feature], np.log(sub[cfg.REGRESSION_TARGET]))[0, 1])
+    prem = sub[cfg.CLASSIFICATION_TARGET] == 1
 
     fig = go.Figure()
-    # The zero-grade students are drawn in the reserved "critical" colour and
-    # labelled, because they are the reason the two correlations differ.
-    fig.add_trace(
-        go.Scatter(
-            x=x[graded], y=y[graded], mode="markers",
-            name=f"Students with a recorded grade (r = {r_graded:+.3f})",
-            marker=dict(size=8, color=SERIES_BLUE, opacity=0.6,
-                        line=dict(width=2, color=SURFACE)),
-            hovertemplate="%{x} absences<br>Final grade %{y}/20<extra></extra>",
+    for mask, name, color in (
+        (~prem, cfg.NEGATIVE_CLASS_LABEL, SERIES_BLUE),
+        (prem, cfg.POSITIVE_CLASS_LABEL, SERIES_VIOLET),
+    ):
+        fig.add_trace(
+            go.Scatter(
+                x=sub.loc[mask, feature], y=lakh[mask], mode="markers", name=name,
+                marker=dict(size=5, color=color, opacity=0.45),
+                hovertemplate=f"{label} %{{x:g}}<br>%{{y:.2f}} lakh<extra>{name}</extra>",
+            )
         )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=x[~graded], y=y[~graded], mode="markers",
-            name=f"{n_zero} students recorded grade 0 AND 0 absences",
-            marker=dict(size=9, color=STATUS_CRITICAL, opacity=0.75,
-                        symbol="diamond", line=dict(width=2, color=SURFACE)),
-            hovertemplate="0 absences<br>Final grade 0/20<extra></extra>",
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=xs, y=slope * xs + intercept, mode="lines",
-            name=f"Fit over all students (r = {r:+.3f})",
-            line=dict(color=INK_SECONDARY, width=2, dash="dash"),
-            hoverinfo="skip",
-        )
-    )
     fig.update_layout(**_base_layout(
-        "Absences vs final grade: why the headline correlation is misleading",
-        height=470, showlegend=True,
-        margin=dict(l=60, r=24, t=52, b=104),
-        legend=dict(orientation="h", yanchor="top", y=-0.18, x=0,
+        f"{label} vs selling price (r with log price = {r:+.3f})",
+        height=450, showlegend=True, margin=dict(l=60, r=24, t=52, b=96),
+        legend=dict(orientation="h", yanchor="top", y=-0.16, x=0,
                     font=dict(size=11, color=INK_SECONDARY)),
     ))
-    fig.update_xaxes(**_axis("School absences (days)"))
-    fig.update_yaxes(**_axis("Final grade (0-20)", range=[-1, 21]))
+    fig.update_xaxes(**_axis(label))
+    fig.update_yaxes(**_axis("Selling price (lakh rupees, log scale)", type="log"))
     return fig
 
 
-def correlation_heatmap(df: pd.DataFrame, include_grades: bool = True) -> go.Figure:
-    """Pearson correlation between the numeric features (and optionally grades).
+def correlation_heatmap(df: pd.DataFrame) -> go.Figure:
+    """Pearson correlation between the numeric features and (log) price.
 
-    Diverging scale, because the sign of a correlation matters: blue for
-    negative, red for positive, neutral grey at zero so "unrelated" reads as
-    nothing. Identifier-like columns are not in NUMERIC_FEATURES, so nothing
-    meaningless is plotted.
+    Diverging scale, because the sign matters: blue negative, red positive,
+    neutral grey at zero. Log price is used for the same reason as elsewhere:
+    the raw price is too skewed for Pearson r to be meaningful.
     """
-    cols = list(cfg.NUMERIC_FEATURES)
-    if include_grades:
-        cols = cols + ["G1", "G2", "G3"]
-    corr = df[cols].corr(numeric_only=True)
+    cols = list(cfg.NUMERIC_FEATURES) + ["log_price"]
+    data = df[cfg.NUMERIC_FEATURES].copy()
+    data["log_price"] = np.log(df[cfg.REGRESSION_TARGET])
+    corr = data[cols].corr()
 
     fig = go.Figure(
         go.Heatmap(
             z=corr.values, x=cols, y=cols,
             colorscale=DIVERGING, zmid=0, zmin=-1, zmax=1,
             xgap=2, ygap=2,
+            text=np.round(corr.values, 2), texttemplate="%{text}",
+            textfont=dict(size=10),
             colorbar=dict(title=dict(text="Pearson r", side="right"),
                           thickness=14, tickfont=dict(size=10, color=INK_MUTED)),
             hovertemplate="%{y} vs %{x}<br>r = %{z:.3f}<extra></extra>",
         )
     )
     fig.update_layout(**_base_layout(
-        "Correlation between numeric features and grades", height=560,
+        "Correlation between numeric features and log price", height=520,
         margin=dict(l=96, r=24, t=52, b=96),
     ))
     fig.update_xaxes(**_no_grid_axis("", tickangle=-45,
@@ -326,7 +289,7 @@ def metric_comparison(clf_metrics: dict, baseline: dict | None = None) -> go.Fig
     a metric -- which is the comparison the reader actually wants. The dashed
     line is the majority-class baseline accuracy: any bar below it in the
     Accuracy group is doing worse than a model that always answers
-    "Not At Risk".
+    "Standard".
     """
     metrics = ["Accuracy", "Precision", "Recall", "F1", "ROC-AUC"]
     models = [m for m in cfg.CLASSIFICATION_MODEL_NAMES if m in clf_metrics]
@@ -380,8 +343,7 @@ def cv_stability(clf_results: dict) -> go.Figure:
 
     This chart exists to stop the comparison table being over-read. The error
     bars overlap heavily, which is the visual form of the project's conclusion:
-    on 316 training students the three classifiers are not reliably
-    distinguishable.
+    the three classifiers are statistically hard to tell apart.
     """
     models = [m for m in cfg.CLASSIFICATION_MODEL_NAMES if m in clf_results]
     means = [clf_results[m]["cv_f1_mean"] for m in models]
@@ -406,7 +368,7 @@ def cv_stability(clf_results: dict) -> go.Figure:
         height=400,
     ))
     fig.update_xaxes(**_no_grid_axis(""))
-    fig.update_yaxes(**_axis("F1 on the at-risk class", range=[0, 0.8], dtick=0.1))
+    fig.update_yaxes(**_axis("F1 on the premium class", range=[0, 0.8], dtick=0.1))
     return fig
 
 
@@ -422,7 +384,7 @@ def confusion_matrix_figure(matrix, model_name: str) -> go.Figure:
     cell_names = [["True negative", "False positive"],
                   ["False negative", "True positive"]]
     cell_notes = [["correctly cleared", "false alarm"],
-                  ["MISSED at-risk student", "correctly flagged"]]
+                  ["MISSED premium car", "correctly flagged"]]
 
     text = [
         [f"<b>{m[i][j]}</b><br>{cell_names[i][j]}<br>"
@@ -433,7 +395,7 @@ def confusion_matrix_figure(matrix, model_name: str) -> go.Figure:
     hover = [
         [f"Actual: {[cfg.NEGATIVE_CLASS_LABEL, cfg.POSITIVE_CLASS_LABEL][i]}<br>"
          f"Predicted: {[cfg.NEGATIVE_CLASS_LABEL, cfg.POSITIVE_CLASS_LABEL][j]}<br>"
-         f"{m[i][j]} students ({m[i][j] / total * 100:.1f}% of the test set)<br>"
+         f"{m[i][j]} cars ({m[i][j] / total * 100:.1f}% of the test set)<br>"
          f"{cell_names[i][j]}"
          for j in range(2)]
         for i in range(2)
@@ -452,7 +414,7 @@ def confusion_matrix_figure(matrix, model_name: str) -> go.Figure:
         )
     )
     fig.update_layout(**_base_layout(
-        f"{model_name} -- confusion matrix ({total} test students)", height=400,
+        f"{model_name} -- confusion matrix ({total} test cars)", height=400,
         margin=dict(l=110, r=24, t=52, b=60),
     ))
     fig.update_xaxes(**_no_grid_axis("", side="bottom"))
@@ -484,7 +446,7 @@ def roc_curves(clf_results: dict) -> go.Figure:
             )
         )
     fig.update_layout(**_base_layout(
-        "ROC curves -- ability to rank at-risk students above the rest", height=440,
+        "ROC curves -- ability to rank premium cars above the rest", height=440,
         showlegend=True,
         legend=dict(yanchor="bottom", y=0.02, xanchor="right", x=0.98,
                     font=dict(size=11, color=INK_SECONDARY),
@@ -501,53 +463,51 @@ def roc_curves(clf_results: dict) -> go.Figure:
 # SECTION: regression diagnostics
 # ==========================================================================
 def actual_vs_predicted(y_true, y_pred, r2: float) -> go.Figure:
-    """Actual against predicted grade, with the ideal y = x reference line.
+    """Actual against predicted price (lakh rupees), log axes, y = x reference.
 
-    A model with no error would put every point on the dashed line. The visible
-    pattern here -- predictions clustered in a narrow band around 10 while the
-    actual grades spread across the whole 0-20 range -- is what a low R-squared
-    looks like.
+    Both axes are logarithmic: errors on a cheap car and a luxury car are
+    comparable in percentage terms, which is what the log-price model optimises.
     """
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
+    lo = float(min(y_true.min(), y_pred.min()))
+    hi = float(max(y_true.max(), y_pred.max()))
 
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
-            x=[0, 20], y=[0, 20], mode="lines", name="Perfect prediction",
+            x=[lo, hi], y=[lo, hi], mode="lines", name="Perfect prediction",
             line=dict(color=INK_MUTED, width=2, dash="dash"), hoverinfo="skip",
         )
     )
     fig.add_trace(
         go.Scatter(
-            x=y_true, y=y_pred, mode="markers", name="Test students",
-            marker=dict(size=9, color=SERIES_BLUE, opacity=0.68,
-                        line=dict(width=2, color=SURFACE)),
-            hovertemplate=("Actual %{x:.0f}/20<br>Predicted %{y:.2f}/20"
-                           "<br>Error %{customdata:+.2f}<extra></extra>"),
+            x=y_true, y=y_pred, mode="markers", name="Test cars",
+            marker=dict(size=6, color=SERIES_BLUE, opacity=0.5),
+            hovertemplate=("Actual %{x:.2f} lakh<br>Predicted %{y:.2f} lakh"
+                           "<br>Error %{customdata:+.2f} lakh<extra></extra>"),
             customdata=y_pred - y_true,
         )
     )
     fig.update_layout(**_base_layout(
-        f"Linear Regression: actual vs predicted grade (test R² = {r2:.3f})",
-        height=440, showlegend=True,
+        f"Linear Regression: actual vs predicted price (test R² = {r2:.3f})",
+        height=460, showlegend=True,
         legend=dict(yanchor="top", y=0.98, xanchor="left", x=0.02,
                     font=dict(size=11, color=INK_SECONDARY),
                     bgcolor="rgba(252,252,251,0.85)", bordercolor=GRIDLINE,
                     borderwidth=1),
     ))
-    fig.update_xaxes(**_axis("Actual final grade (0-20)", range=[-1, 21], dtick=5))
-    fig.update_yaxes(**_axis("Predicted final grade (0-20)", range=[-1, 21], dtick=5,
-                             scaleanchor="x", scaleratio=1))
+    fig.update_xaxes(**_axis("Actual price (lakh rupees, log scale)", type="log"))
+    fig.update_yaxes(**_axis("Predicted price (lakh rupees, log scale)", type="log"))
     return fig
 
 
 def residual_plot(y_true, y_pred) -> go.Figure:
-    """Residuals (actual - predicted) against the predicted value.
+    """Residuals (actual - predicted, lakh rupees) against the predicted price.
 
-    Residuals should scatter randomly around zero. The downward band of points
-    at the bottom belongs to the students who recorded a final grade of 0: the
-    model predicts a normal pass for them and is wrong by ten points or more.
+    A funnel that widens to the right means errors grow with price: a fixed
+    rupee error is a small share of an expensive car and a large share of a cheap
+    one, which is why MedAPE is reported alongside MAE.
     """
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
@@ -556,18 +516,17 @@ def residual_plot(y_true, y_pred) -> go.Figure:
     fig = go.Figure(
         go.Scatter(
             x=y_pred, y=resid, mode="markers",
-            marker=dict(size=9, color=SERIES_VIOLET, opacity=0.68,
-                        line=dict(width=2, color=SURFACE)),
-            hovertemplate=("Predicted %{x:.2f}/20<br>Residual %{y:+.2f}"
+            marker=dict(size=6, color=SERIES_VIOLET, opacity=0.5),
+            hovertemplate=("Predicted %{x:.2f} lakh<br>Residual %{y:+.2f} lakh"
                            "<extra></extra>"),
         )
     )
     fig.add_hline(y=0, line=dict(color=INK_SECONDARY, width=2, dash="dash"))
     fig.update_layout(**_base_layout(
-        "Residual plot -- residual = actual grade minus predicted grade", height=400
+        "Residual plot -- residual = actual price minus predicted price", height=410
     ))
-    fig.update_xaxes(**_axis("Predicted final grade (0-20)"))
-    fig.update_yaxes(**_axis("Residual (grade points)"))
+    fig.update_xaxes(**_axis("Predicted price (lakh rupees)"))
+    fig.update_yaxes(**_axis("Residual (lakh rupees)"))
     return fig
 
 
@@ -613,13 +572,13 @@ def logistic_coefficient_bars(coef_df: pd.DataFrame, top_n: int = 15) -> go.Figu
     """Signed Logistic Regression coefficients.
 
     A diverging colour scale is correct here because the *sign* is the message:
-    red for coefficients associated with higher predicted risk, blue for lower,
+    violet for coefficients that raise the odds of Premium, blue for lower,
     and the zero line reads as "no association". Values are on the standardised
     feature scale, so they are comparable with each other.
     """
     top = coef_df.nlargest(top_n, "abs_coefficient").iloc[::-1]
     labels = [cfg.FEATURE_LABELS.get(f, f) for f in top["feature"]]
-    colors = [STATUS_CRITICAL if c >= 0 else SERIES_BLUE for c in top["coefficient"]]
+    colors = [SERIES_VIOLET if c >= 0 else SERIES_BLUE for c in top["coefficient"]]
 
     fig = go.Figure(
         go.Bar(
@@ -637,69 +596,73 @@ def logistic_coefficient_bars(coef_df: pd.DataFrame, top_n: int = 15) -> go.Figu
         height=max(360, 26 * len(top) + 110),
         margin=dict(l=210, r=48, t=52, b=52),
     ))
-    fig.update_xaxes(**_axis("Change in log-odds of being at risk  "
-                            "(right = higher risk)"))
+    fig.update_xaxes(**_axis("Change in log-odds of being premium  "
+                            "(right = more likely premium)"))
     fig.update_yaxes(**_no_grid_axis("", tickfont=dict(size=11, color=INK_SECONDARY)))
     return fig
 
 
 # ==========================================================================
-# SECTION: single-student prediction
+# SECTION: single-car prediction
 # ==========================================================================
-def score_gauge(predicted_score: float) -> go.Figure:
-    """Predicted grade as a gauge against the 0-20 scale.
+def price_display(predicted_price: float, test_mae_lakh: float | None = None) -> go.Figure:
+    """Predicted price as a big number on a bar, against the premium line.
 
-    The red band below the pass mark and the threshold needle let the number be
-    read in context: 9.4/20 means little until you can see it sits under 10.
+    The scale runs to 15 lakh (the 95th percentile region of the data); the
+    predicted value is clipped for display only. When the test MAE is supplied,
+    a band of +/- MAE is drawn so the number is not read as exact.
     """
-    score = float(np.clip(predicted_score, 0, cfg.GRADE_MAX))
+    lakh = predicted_price / cfg.LAKH
+    top = 15.0
+    thr = cfg.PREMIUM_THRESHOLD / cfg.LAKH
     fig = go.Figure(
         go.Indicator(
             mode="gauge+number",
-            value=score,
-            number=dict(suffix=f" / {cfg.GRADE_MAX}", font=dict(size=40, color=INK)),
+            value=min(lakh, top),
+            number=dict(prefix="₹ ", suffix=" lakh",
+                        valueformat=",.2f", font=dict(size=38, color=INK)),
             gauge=dict(
-                axis=dict(range=[0, cfg.GRADE_MAX], tickwidth=1, tickcolor=AXISLINE,
-                          tickfont=dict(size=10, color=INK_MUTED), dtick=5),
+                axis=dict(range=[0, top], tickwidth=1, tickcolor=AXISLINE,
+                          tickfont=dict(size=10, color=INK_MUTED), dtick=3),
                 bar=dict(color=SERIES_BLUE, thickness=0.62),
                 bgcolor=SURFACE, borderwidth=1, bordercolor=GRIDLINE,
-                steps=[
-                    dict(range=[0, cfg.AT_RISK_THRESHOLD], color="#fbeaea"),
-                    dict(range=[cfg.AT_RISK_THRESHOLD, cfg.GRADE_MAX], color="#eaf4ea"),
-                ],
+                steps=[dict(range=[0, thr], color="#eef3fb"),
+                       dict(range=[thr, top], color="#ece8f7")],
                 threshold=dict(line=dict(color=STATUS_CRITICAL, width=3),
-                               thickness=0.85, value=cfg.AT_RISK_THRESHOLD),
+                               thickness=0.85, value=thr),
             ),
         )
     )
-    fig.update_layout(**_base_layout("Predicted final grade", height=300,
+    title = "Predicted selling price"
+    if lakh > top:
+        title += f" (gauge capped at {top:g} lakh)"
+    fig.update_layout(**_base_layout(title, height=300,
                                      margin=dict(l=36, r=36, t=52, b=16)))
     return fig
 
 
-def risk_probability_bar(probability: float, threshold: float = 0.5) -> go.Figure:
-    """Risk probability as a labelled meter with the decision threshold marked.
+def premium_probability_bar(probability: float, threshold: float = 0.5) -> go.Figure:
+    """Premium probability as a labelled meter with the decision threshold marked.
 
-    The meter's fill colour carries the severity and the percentage is printed,
-    so the state is never communicated by colour alone.
+    The percentage is printed, so the state is never communicated by colour alone.
     """
     pct = float(np.clip(probability, 0, 1)) * 100
-    color = STATUS_CRITICAL if probability >= threshold else STATUS_GOOD
+    color = SERIES_VIOLET if probability >= threshold else SERIES_BLUE
 
     fig = go.Figure()
     # The bar is deliberately less than full height so the threshold label has
     # clear space above it instead of printing over the fill.
     fig.add_trace(
         go.Bar(
-            x=[100], y=["risk"], orientation="h", width=0.42,
+            x=[100], y=["premium"], orientation="h", width=0.42,
             marker=dict(color="#f0efec"), hoverinfo="skip", showlegend=False,
         )
     )
     fig.add_trace(
         go.Bar(
-            x=[pct], y=["risk"], orientation="h", width=0.42,
+            x=[pct], y=["premium"], orientation="h", width=0.42,
             marker=dict(color=color, line=dict(width=2, color=SURFACE)),
-            hovertemplate=f"Estimated probability of being at risk: {pct:.1f}%"
+            hovertemplate=f"Estimated probability of being premium: {pct:.1f}%"
                           "<extra></extra>",
             showlegend=False,
         )
@@ -713,11 +676,11 @@ def risk_probability_bar(probability: float, threshold: float = 0.5) -> go.Figur
         font=dict(size=11, color=INK_SECONDARY), xanchor="center", yshift=2,
     )
     fig.add_annotation(
-        x=1, y="risk", text=f"<b>{pct:.1f}%</b>", showarrow=False,
+        x=1, y="premium", text=f"<b>{pct:.1f}%</b>", showarrow=False,
         xanchor="left", font=dict(size=14, color=INK), xshift=6,
     )
     fig.update_layout(**_base_layout(
-        "Estimated probability of being at risk", height=230, barmode="overlay",
+        "Estimated probability of being premium", height=230, barmode="overlay",
         margin=dict(l=12, r=70, t=74, b=46),
     ))
     fig.update_xaxes(**_no_grid_axis("Probability (%)", range=[0, 108], dtick=20))
@@ -726,46 +689,41 @@ def risk_probability_bar(probability: float, threshold: float = 0.5) -> go.Figur
     return fig
 
 
-def student_profile_bars(profile: dict, df: pd.DataFrame) -> go.Figure:
-    """Where this student sits on each ordinal scale, as a percentile-free bar.
+def car_profile_bars(profile: dict, ranges: dict) -> go.Figure:
+    """Where this car sits within each numeric feature's observed range.
 
-    Each bar is the student's value rescaled to 0-100% of that feature's own
-    observed range, so the chart answers "high or low for this cohort?". It is
-    NOT a statement about which features mattered to the prediction -- the
-    importance charts are the place for that, and the axis title says so.
+    Each bar is the car's value rescaled to 0-100% of that feature's range in the
+    dataset, answering "high or low for this market?". It is NOT a statement
+    about which features drove the prediction -- the importance charts are the
+    place for that, and the axis title says so.
     """
-    features = ["studytime", "failures", "absences", "goout", "famrel",
-                "freetime", "health", "Dalc", "Walc", "traveltime"]
-    features = [f for f in features if f in profile]
-
-    labels, pcts, raws, ranges = [], [], [], []
+    features = [f for f in cfg.NUMERIC_FEATURES if f in profile and f in ranges]
+    labels, pcts, raws, spans = [], [], [], []
     for f in features:
-        lo, hi = float(df[f].min()), float(df[f].max())
+        lo, hi = ranges[f]["min"], ranges[f]["max"]
         val = float(profile[f])
-        pct = 0.0 if hi == lo else (val - lo) / (hi - lo) * 100
+        pct = 0.0 if hi == lo else float(np.clip((val - lo) / (hi - lo) * 100, 0, 100))
         labels.append(cfg.FEATURE_LABELS.get(f, f))
         pcts.append(pct)
         raws.append(val)
-        ranges.append(f"{lo:g} to {hi:g}")
+        spans.append(f"{lo:g} to {hi:g}")
 
     order = np.argsort(pcts)
     fig = go.Figure(
         go.Bar(
-            x=[pcts[i] for i in order],
-            y=[labels[i] for i in order],
+            x=[pcts[i] for i in order], y=[labels[i] for i in order],
             orientation="h",
             marker=dict(color=SERIES_BLUE, line=dict(width=2, color=SURFACE)),
-            customdata=[[raws[i], ranges[i]] for i in order],
-            text=[f"{raws[i]:g}" for i in order],
-            textposition="outside",
+            customdata=[[raws[i], spans[i]] for i in order],
+            text=[f"{raws[i]:g}" for i in order], textposition="outside",
             textfont=dict(size=11, color=INK_SECONDARY),
-            hovertemplate=("%{y}<br>This student: %{customdata[0]:g}"
+            hovertemplate=("%{y}<br>This car: %{customdata[0]:g}"
                            "<br>Dataset range: %{customdata[1]}"
                            "<br>%{x:.0f}% of that range<extra></extra>"),
         )
     )
     fig.update_layout(**_base_layout(
-        "Student input profile", height=max(340, 28 * len(features) + 110),
+        "Car input profile", height=max(320, 28 * len(features) + 110),
         margin=dict(l=210, r=56, t=52, b=56),
     ))
     fig.update_xaxes(**_axis("Position within this feature's range in the dataset (%)",
@@ -774,42 +732,42 @@ def student_profile_bars(profile: dict, df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def leakage_comparison_chart(leakage_rows: list[dict]) -> go.Figure:
-    """Side-by-side metrics with and without the intermediate grades G1/G2.
+def duplicate_leakage_chart(leakage_rows: list[dict]) -> go.Figure:
+    """Side-by-side metrics with duplicate listings removed vs kept.
 
-    Two conditions rather than two series, so they are labelled directly. The
-    gap between the pairs is the whole point of the chart: it is what target
-    leakage buys you on paper and why the project refuses to use it.
+    Two conditions rather than two series, so they are labelled directly. The gap
+    between each pair is what the same car appearing in both train and test buys
+    on paper -- and why the project removes the duplicates before splitting.
     """
     rows = [r for r in leakage_rows if r["Metric"] in ("F1", "ROC-AUC", "R2")]
     names = [f"{r['Model'].replace(' (RBF)', '')}<br>"
              f"{r['Metric'].replace('R2', 'R²')}" for r in rows]
-    clean = [r["Leakage-free (no G1/G2)"] for r in rows]
-    leaky = [r["With leakage (G1+G2)"] for r in rows]
+    clean = [r["Duplicates removed (reported)"] for r in rows]
+    leaky = [r["Duplicates kept"] for r in rows]
 
     fig = go.Figure()
     fig.add_trace(
         go.Bar(
-            name="Leakage-free (G1/G2 excluded) -- what this project reports",
+            name="Duplicates removed -- what this project reports",
             x=names, y=clean,
             marker=dict(color=SERIES_BLUE, line=dict(width=2, color=SURFACE)),
             text=[f"{v:.3f}" for v in clean], textposition="outside",
             textfont=dict(size=10, color=INK_SECONDARY),
-            hovertemplate="%{x}<br>Leakage-free: %{y:.4f}<extra></extra>",
+            hovertemplate="%{x}<br>Duplicates removed: %{y:.4f}<extra></extra>",
         )
     )
     fig.add_trace(
         go.Bar(
-            name="With leakage (G1/G2 included) -- misleadingly good",
+            name="Duplicates kept -- flattering, because test cars were seen in training",
             x=names, y=leaky,
             marker=dict(color=STATUS_WARNING, line=dict(width=2, color=SURFACE)),
             text=[f"{v:.3f}" for v in leaky], textposition="outside",
             textfont=dict(size=10, color=INK_SECONDARY),
-            hovertemplate="%{x}<br>With leakage: %{y:.4f}<extra></extra>",
+            hovertemplate="%{x}<br>Duplicates kept: %{y:.4f}<extra></extra>",
         )
     )
     fig.update_layout(**_base_layout(
-        "What target leakage does to the reported scores", height=520,
+        "What duplicate listings do to the reported scores", height=520,
         barmode="group", bargap=0.3, bargroupgap=0.08, showlegend=True,
         margin=dict(l=60, r=24, t=52, b=132),
         legend=dict(orientation="h", yanchor="top", y=-0.20, x=0,
@@ -837,7 +795,7 @@ def threshold_tradeoff(curve: dict, default_threshold: float,
     fig = go.Figure()
     for key, label, color in (
         ("precision", "Precision", "#2a78d6"),
-        ("recall", "Recall (at-risk students found)", "#eb6834"),
+        ("recall", "Recall (premium cars found)", "#eb6834"),
         ("f1", "F1", "#1baf7a"),
     ):
         fig.add_trace(
@@ -866,8 +824,8 @@ def threshold_tradeoff(curve: dict, default_threshold: float,
         legend=dict(orientation="h", yanchor="top", y=-0.16, x=0,
                     font=dict(size=11, color=INK_SECONDARY)),
     ))
-    fig.update_xaxes(**_axis("Decision threshold — P(at risk) above which a "
-                            "student is flagged", range=[0, 1], dtick=0.1))
+    fig.update_xaxes(**_axis("Decision threshold — P(premium) above which a "
+                            "car is flagged", range=[0, 1], dtick=0.1))
     fig.update_yaxes(**_axis("Score (0 to 1)", range=[0, 1.02], dtick=0.2))
     return fig
 
@@ -875,12 +833,12 @@ def threshold_tradeoff(curve: dict, default_threshold: float,
 def calibration_chart(calibrations: dict) -> go.Figure:
     """Predicted probability against observed failure rate, per model.
 
-    A perfectly calibrated model sits on the diagonal: of the students it calls
+    A perfectly calibrated model sits on the diagonal: of the cars it calls
     40% risk, 40% actually fail. Points below the diagonal mean the model is
     over-confident (it claims more risk than materialises); above means
     under-confident.
 
-    Bins hold an equal NUMBER of students rather than an equal slice of the
+    Bins hold an equal NUMBER of cars rather than an equal slice of the
     probability axis, because these probabilities are compressed and an evenly
     sliced axis would leave most bins empty.
     """
@@ -903,7 +861,7 @@ def calibration_chart(calibrations: dict) -> go.Figure:
                 line=dict(color=MODEL_COLORS[model], width=2),
                 marker=dict(size=9, line=dict(width=2, color=SURFACE)),
                 hovertemplate=(f"{model}<br>predicted %{{x:.3f}}"
-                               "<br>actually failed %{y:.3f}<extra></extra>"),
+                               "<br>actually premium %{y:.3f}<extra></extra>"),
             )
         )
     fig.update_layout(**_base_layout(
@@ -916,8 +874,8 @@ def calibration_chart(calibrations: dict) -> go.Figure:
     # is tall made Plotly extend the axes past [0, 1], which is nonsense on a
     # probability scale. The dashed reference line carries the comparison
     # instead, and both axes stay honestly bounded.
-    fig.update_xaxes(**_axis("Mean predicted P(at risk)", range=[0, 1], dtick=0.2))
-    fig.update_yaxes(**_axis("Observed share who actually failed", range=[0, 1],
+    fig.update_xaxes(**_axis("Mean predicted P(premium)", range=[0, 1], dtick=0.2))
+    fig.update_yaxes(**_axis("Observed share who actually premium", range=[0, 1],
                              dtick=0.2))
     return fig
 
@@ -962,9 +920,9 @@ def probability_spread(calibrations: dict) -> go.Figure:
         font=dict(size=11, color=INK_SECONDARY), yshift=2,
     )
     fig.update_layout(**_base_layout(
-        "The range of risk percentages each model actually produces",
+        "The range of premium percentages each model actually produces",
         height=320, barmode="overlay", margin=dict(l=150, r=96, t=74, b=52),
     ))
-    fig.update_xaxes(**_no_grid_axis("P(at risk) (%)", range=[0, 112], dtick=20))
+    fig.update_xaxes(**_no_grid_axis("P(premium) (%)", range=[0, 112], dtick=20))
     fig.update_yaxes(**_no_grid_axis("", tickfont=dict(size=11, color=INK_SECONDARY)))
     return fig

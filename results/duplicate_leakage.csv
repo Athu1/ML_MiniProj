@@ -1,0 +1,12 @@
+Task,Model,Metric,Duplicates removed (reported),Duplicates kept
+Regression,Linear Regression,R2,0.8589,0.8942
+Regression,Linear Regression,MAE (lakh),0.9201,1.2134
+Classification,Logistic Regression,F1,0.8411,0.8639
+Classification,Logistic Regression,ROC-AUC,0.9611,0.9671
+Classification,Logistic Regression,Accuracy,0.9062,0.9077
+Classification,SVM (RBF),F1,0.8502,0.8836
+Classification,SVM (RBF),ROC-AUC,0.9695,0.9785
+Classification,SVM (RBF),Accuracy,0.9105,0.9219
+Classification,Random Forest,F1,0.8512,0.8988
+Classification,Random Forest,ROC-AUC,0.9736,0.9821
+Classification,Random Forest,Accuracy,0.9127,0.9305

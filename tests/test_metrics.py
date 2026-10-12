@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 
 
-def test_positive_class_is_at_risk(em):
-    """Precision/recall/F1 must be reported for the at-risk class, not class 0.
+def test_positive_class_is_premium(em):
+    """Precision/recall/F1 must be reported for the premium class, not class 0.
 
     If this flips, every precision and recall figure in the documentation means
     the opposite of what it says.
@@ -78,7 +78,7 @@ def test_tie_is_not_declared_when_the_gap_is_real(em):
 # Decision threshold
 # -------------------------------------------------------------------------
 def test_higher_fn_cost_never_raises_the_threshold(em):
-    """Valuing missed students more must make the model flag MORE, not fewer.
+    """Valuing missed premium cars more must make the model flag MORE, not fewer.
 
     Recall is monotonically non-decreasing in the cost ratio; equivalently the
     chosen cut-off is non-increasing. If this fails, the cost model is wired up

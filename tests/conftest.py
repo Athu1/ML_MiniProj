@@ -32,9 +32,14 @@ def em():
 
 
 @pytest.fixture(scope="session")
+def raw(dp):
+    return dp.load_raw()
+
+
+@pytest.fixture(scope="session")
 def df(dp):
-    """The full dataset with the at-risk target attached."""
-    return dp.load_dataset("mat")
+    """The cleaned, de-duplicated car dataset with the premium label attached."""
+    return dp.load_dataset()
 
 
 @pytest.fixture(scope="session")

@@ -33,9 +33,10 @@ import config as cfg
 def regression_metrics(y_true, y_pred) -> dict:
     """MAE, MSE, RMSE and R-squared.
 
-    RMSE is reported alongside MAE because it is in the same units as the grade
-    (0-20) but penalises large errors more heavily -- useful here, where the
-    38 students with G3 = 0 produce a handful of very large residuals.
+    RMSE is reported alongside MAE because it is in the same units as the target
+    but penalises large errors more heavily -- useful here, where a handful of
+    luxury cars priced in the tens of lakhs produce a few very large residuals.
+    Callers pass prices in lakh rupees so the numbers stay readable.
     """
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
@@ -45,6 +46,8 @@ def regression_metrics(y_true, y_pred) -> dict:
         "MSE": mse,
         "RMSE": float(np.sqrt(mse)),
         "R2": float(r2_score(y_true, y_pred)),
+        # Median absolute percentage error: the typical miss as a share of price.
+        "MedAPE": float(np.median(np.abs(y_true - y_pred) / y_true) * 100),
     }
 
 
@@ -67,9 +70,9 @@ def classification_metrics(y_true, y_pred, y_proba=None) -> dict:
     """Accuracy, precision, recall, F1 and (when probabilities exist) ROC-AUC.
 
     Precision/recall/F1 are reported for the POSITIVE class, which this project
-    defines as "At Risk" (label 1). That is deliberate: the costly mistake in an
-    early-warning system is failing to flag a student who does need help, so
-    recall on the at-risk class is the metric that matters most.
+    defines as "Premium" (label 1), the minority class. Reporting them for the
+    majority class instead would flatter every model, since "Standard" is the
+    easy answer for about seven cars in ten.
     """
     metrics = {
         "Accuracy": float(accuracy_score(y_true, y_pred)),
@@ -84,10 +87,10 @@ def classification_metrics(y_true, y_pred, y_proba=None) -> dict:
 
 
 def baseline_classification_metrics(y_train, y_test) -> dict:
-    """The majority-class baseline: always predict 'Not At Risk'.
+    """The majority-class baseline: always predict 'Standard'.
 
     Its accuracy is the floor every model must clear before accuracy means
-    anything. Its recall on the at-risk class is 0, which is exactly why
+    anything. Its recall on the premium class is 0, which is exactly why
     accuracy alone is a misleading score on this dataset.
     """
     majority = int(pd.Series(y_train).mode().iloc[0])
@@ -103,10 +106,10 @@ def confusion_counts(y_true, y_pred) -> dict:
     tn, fp, fn, tp = cm.ravel()
     return {
         "matrix": cm.tolist(),
-        "TN": int(tn),  # correctly identified as Not At Risk
-        "FP": int(fp),  # false alarm: flagged At Risk but actually passed
-        "FN": int(fn),  # missed case: not flagged but actually At Risk
-        "TP": int(tp),  # correctly identified as At Risk
+        "TN": int(tn),  # correctly identified as Standard
+        "FP": int(fp),  # wrongly flagged Premium but actually Standard
+        "FN": int(fn),  # missed case: not flagged but actually Premium
+        "TP": int(tp),  # correctly identified as Premium
     }
 
 
@@ -148,8 +151,8 @@ def pick_best_model(results: dict, primary: str = "F1", secondary: str = "ROC-AU
     """Select the best classifier by F1, breaking ties with ROC-AUC.
 
     F1 leads rather than accuracy because the classes are imbalanced (about one
-    student in three is at risk), so a model can score well on accuracy while
-    missing most of the students the system exists to find.
+    car in three is premium), so a model can score well on accuracy while
+    missing most of the premium cars it is meant to find.
     """
     def key(name):
         m = results[name]["test_metrics"]
@@ -174,8 +177,8 @@ def assess_tie(results: dict, metric: str = "F1") -> dict:
     If the gap between the best and second-best model is smaller than the
     largest CV standard deviation among them, the difference is inside the noise
     floor and the project reports a statistical tie instead of crowning a
-    winner. The test set here is only 79 students, so one or two reclassified
-    students move F1 by several points.
+    winner. The test set here is about 1,400 cars, so a few dozen reclassified
+    cars move F1 by a point or two.
     """
     scored = sorted(
         ((name, res["test_metrics"].get(metric, float("nan")))
@@ -214,8 +217,8 @@ def assess_tie(results: dict, metric: str = "F1") -> dict:
 def expected_cost(y_true, y_proba, threshold: float, fn_cost: float) -> float:
     """Cost of applying `threshold`, in units of "one false alarm".
 
-    A false negative (a missed at-risk student) counts `fn_cost` times as much
-    as a false positive. Cost is returned per student so it is comparable
+    A false negative (a missed premium car) counts `fn_cost` times as much
+    as a false positive. Cost is returned per car so it is comparable
     across differently sized sets.
     """
     y_true = np.asarray(y_true, dtype=int)
@@ -317,7 +320,7 @@ def threshold_curve(y_true, y_proba, fn_cost: float = None) -> dict:
 # Probability calibration
 # ==========================================================================
 def calibration_report(y_true, y_proba, n_bins: int = None) -> dict:
-    """Is a predicted "70% risk" actually borne out 70% of the time?
+    """Is a predicted "70% premium" actually borne out 70% of the time?
 
     Returns the calibration curve (mean predicted probability against observed
     frequency, per bin), the Brier score, and -- importantly for this project --
@@ -336,7 +339,7 @@ def calibration_report(y_true, y_proba, n_bins: int = None) -> dict:
     y_true = np.asarray(y_true, dtype=int)
     y_proba = np.asarray(y_proba, dtype=float)
 
-    # `strategy="quantile"` puts an equal number of students in each bin rather
+    # `strategy="quantile"` puts an equal number of cars in each bin rather
     # than slicing the probability axis evenly. With compressed probabilities
     # the uniform strategy leaves most bins empty.
     frac_pos, mean_pred = calibration_curve(
@@ -375,7 +378,7 @@ def describe_calibration(report: dict) -> str:
     mid = report["frac_in_mid_band"]
     if rng < 0.5 or mid > 0.9:
         verdict = (
-            "heavily compressed -- read these as relative risk scores, not as "
+            "heavily compressed -- read these as relative scores, not as "
             "calibrated probabilities"
         )
     elif mace > 0.15:
@@ -386,6 +389,6 @@ def describe_calibration(report: dict) -> str:
         verdict = "reasonably well calibrated on this test set"
     return (
         f"range {report['proba_min']:.2f}-{report['proba_max']:.2f}, "
-        f"{mid:.0%} of students between 0.3 and 0.7, "
+        f"{mid:.0%} of cars between 0.3 and 0.7, "
         f"mean calibration error {mace:.3f} -> {verdict}"
     )

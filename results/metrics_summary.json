@@ -1,61 +1,30 @@
 {
-  "dataset": "mat",
-  "best_classifier": "SVM (RBF)",
-  "tie_analysis": {
-    "metric": "F1",
-    "ranking": [
-      {
-        "model": "SVM (RBF)",
-        "F1": 0.5614035087719298
-      },
-      {
-        "model": "Random Forest",
-        "F1": 0.5581395348837209
-      },
-      {
-        "model": "Logistic Regression",
-        "F1": 0.5333333333333333
-      }
-    ],
-    "best_model": "SVM (RBF)",
-    "best_score": 0.5614035087719298,
-    "runner_up": "Random Forest",
-    "runner_up_score": 0.5581395348837209,
-    "gap": 0.003263973888208871,
-    "noise_floor": 0.08256140593051542,
-    "is_tie": true,
-    "tied_models": [
-      "SVM (RBF)",
-      "Random Forest",
-      "Logistic Regression"
-    ],
-    "n_test": 79
-  },
+  "best_classifier": "Random Forest",
   "classification": {
     "Logistic Regression": {
-      "Accuracy": 0.6455696202531646,
-      "Precision": 0.47058823529411764,
-      "Recall": 0.6153846153846154,
-      "F1": 0.5333333333333333,
-      "ROC-AUC": 0.6981132075471698
+      "Accuracy": 0.9062049062049062,
+      "Precision": 0.8390243902439024,
+      "Recall": 0.8431372549019608,
+      "F1": 0.8410757946210269,
+      "ROC-AUC": 0.9610712638838766
     },
     "SVM (RBF)": {
-      "Accuracy": 0.6835443037974683,
-      "Precision": 0.5161290322580645,
-      "Recall": 0.6153846153846154,
-      "F1": 0.5614035087719298,
-      "ROC-AUC": 0.7242380261248186
+      "Accuracy": 0.9105339105339105,
+      "Precision": 0.8380952380952381,
+      "Recall": 0.8627450980392157,
+      "F1": 0.8502415458937198,
+      "ROC-AUC": 0.9695193772805646
     },
     "Random Forest": {
-      "Accuracy": 0.759493670886076,
-      "Precision": 0.7058823529411765,
-      "Recall": 0.46153846153846156,
-      "F1": 0.5581395348837209,
-      "ROC-AUC": 0.6857764876632801
+      "Accuracy": 0.9126984126984127,
+      "Precision": 0.854320987654321,
+      "Recall": 0.8480392156862745,
+      "F1": 0.8511685116851169,
+      "ROC-AUC": 0.9735517161874975
     }
   },
   "classification_baseline": {
-    "Accuracy": 0.6708860759493671,
+    "Accuracy": 0.7056277056277056,
     "Precision": 0.0,
     "Recall": 0.0,
     "F1": 0.0,
@@ -63,16 +32,19 @@
     "Model": "Baseline (majority class)"
   },
   "regression": {
-    "MAE": 3.3952609258019204,
-    "MSE": 17.603737398324718,
-    "RMSE": 4.195680802721379,
-    "R2": 0.14149247411195776
+    "MAE": 0.9200927139099832,
+    "MSE": 3.0951302412635404,
+    "RMSE": 1.7592982240835522,
+    "R2": 0.8588771080349082,
+    "MedAPE": 15.973120949753728,
+    "R2_log": 0.8684690737416378
   },
   "regression_baseline": {
-    "MAE": 3.64585002403461,
-    "MSE": 20.70414396731293,
-    "RMSE": 4.550180652162387,
-    "R2": -0.009709643515769084,
+    "MAE": 2.7531347923484457,
+    "MSE": 21.97654193986988,
+    "RMSE": 4.687914455263649,
+    "R2": -0.0020234730673136525,
+    "MedAPE": 46.237088697584,
     "Model": "Baseline (predict mean)"
   }
 }
